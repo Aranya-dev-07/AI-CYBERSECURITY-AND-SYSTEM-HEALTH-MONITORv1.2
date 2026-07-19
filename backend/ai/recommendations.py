@@ -53,6 +53,31 @@ class RecommendationSource(str, Enum):
     RULE_BASED = "rule_based"
 
 
+# ai/predictive_alerts.py defines its own Severity enum (Info/Warning/Major/
+# Critical) that is independent of this module's Severity enum (Low/Medium/
+# High/Critical). Predictions arrive with predictive_alerts' severity
+# strings, so they must be translated before constructing this module's
+# Severity - constructing Severity("Warning") directly raises ValueError
+# since "Warning" is not a member of this enum.
+_PREDICTIVE_SEVERITY_MAP: dict[str, "Severity"] = {
+    "Info": Severity.LOW,
+    "Warning": Severity.MEDIUM,
+    "Major": Severity.HIGH,
+    "Critical": Severity.CRITICAL,
+}
+
+
+def _map_predictive_severity(value: Optional[str]) -> "Severity":
+    """
+    Translates a predictive_alerts.py severity string (Info/Warning/Major/
+    Critical) into this module's Severity enum. Falls back to Severity.LOW
+    for unrecognized or missing values instead of raising.
+    """
+    if value is None:
+        return Severity.LOW
+    return _PREDICTIVE_SEVERITY_MAP.get(value, Severity.LOW)
+
+
 class RecommendationCategory(str, Enum):
     PERFORMANCE = "Performance"
     STABILITY = "Stability"
@@ -337,7 +362,7 @@ def _from_predictions(
     recs: list[Recommendation] = []
     for prediction in inputs.predictions:
         try:
-            severity = Severity(prediction.get("severity", Severity.LOW.value))
+            severity = _map_predictive_severity(prediction.get("severity"))
             priority = _calculate_priority(severity, RecommendationSource.PREDICTIVE_ALERTS, config)
 
             recs.append(Recommendation(

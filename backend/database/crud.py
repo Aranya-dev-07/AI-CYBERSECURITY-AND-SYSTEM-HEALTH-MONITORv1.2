@@ -29,6 +29,52 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Generator, Optional
 
+
+def _to_json_safe(value: Any) -> Any:
+    """
+    Recursively converts numpy/pandas scalar types (numpy.bool_,
+    numpy.integer, numpy.floating, numpy.ndarray, pandas.Timestamp, etc.)
+    into native Python types the stdlib json encoder can serialize.
+
+    AI modules (predictive_alerts.py, health_score.py, anomaly_detection.py,
+    etc.) build their result dicts using numpy/pandas throughout, and stray
+    numpy scalars (most commonly numpy.bool_, which prints as "bool" under
+    NumPy 2.x and is easy to mistake for the builtin) routinely end up
+    embedded in nested dicts/lists. json.dumps() only accepts the builtin
+    bool/int/float/str/None - not their numpy counterparts - so this
+    sanitizer is applied once at the database boundary rather than trying
+    to track down and fix every upstream call site that might produce one.
+    """
+    try:
+        import numpy as np
+    except ImportError:  # pragma: no cover - numpy is a required dependency
+        np = None
+
+    if np is not None:
+        if isinstance(value, np.bool_):
+            return bool(value)
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.floating):
+            return float(value)
+        if isinstance(value, np.ndarray):
+            return [_to_json_safe(item) for item in value.tolist()]
+
+    if isinstance(value, datetime):
+        return value.isoformat()
+
+    if hasattr(value, "isoformat") and not isinstance(value, str):
+        # Covers pandas.Timestamp and similar datetime-like objects.
+        return value.isoformat()
+
+    if isinstance(value, dict):
+        return {key: _to_json_safe(val) for key, val in value.items()}
+
+    if isinstance(value, (list, tuple, set)):
+        return [_to_json_safe(item) for item in value]
+
+    return value
+
 from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -380,15 +426,15 @@ def insert_ai_result(
                 timestamp=_parse_timestamp(result.get("timestamp")),
                 health_score=health.get("score"),
                 health_status=health.get("status"),
-                health_details=health,
-                anomalies=result.get("anomalies", []),
-                root_causes=result.get("root_causes", []),
-                trends=result.get("trends", []),
-                resource_growth=result.get("resource_growth", []),
-                process_memory_leaks=result.get("process_memory_leaks", []),
-                predictions=result.get("predictions", []),
-                recommendations=result.get("recommendations", []),
-                errors=result.get("errors", []),
+                health_details=_to_json_safe(health),
+                anomalies=_to_json_safe(result.get("anomalies", [])),
+                root_causes=_to_json_safe(result.get("root_causes", [])),
+                trends=_to_json_safe(result.get("trends", [])),
+                resource_growth=_to_json_safe(result.get("resource_growth", [])),
+                process_memory_leaks=_to_json_safe(result.get("process_memory_leaks", [])),
+                predictions=_to_json_safe(result.get("predictions", [])),
+                recommendations=_to_json_safe(result.get("recommendations", [])),
+                errors=_to_json_safe(result.get("errors", [])),
             )
             session.add(record)
             session.flush()
