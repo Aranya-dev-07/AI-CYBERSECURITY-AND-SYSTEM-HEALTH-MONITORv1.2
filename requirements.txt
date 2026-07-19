@@ -1,0 +1,55 @@
+# =============================================================
+# Lavender Trinetra — AI Cybersecurity & System Health Monitor
+# Backend Requirements (Python 3.13+)
+# =============================================================
+
+# ---------------------------
+# API / Web Framework
+# ---------------------------
+fastapi>=0.136.1
+uvicorn[standard]>=0.34.0
+websockets>=14.1
+pydantic>=2.10.0
+python-dotenv>=1.0.1
+
+# ---------------------------
+# Database
+# ---------------------------
+SQLAlchemy>=2.0.36
+# NOTE: sqlite3 is part of the Python standard library — no package needed.
+
+# ---------------------------
+# AI / Machine Learning
+# ---------------------------
+scikit-learn>=1.6.0
+numpy>=2.2.0
+pandas>=2.2.3
+joblib>=1.4.2
+
+# ---------------------------
+# System Monitoring
+# ---------------------------
+psutil>=6.1.0
+
+# ---------------------------
+# Networking / HTTP Clients
+# ---------------------------
+requests>=2.32.3
+httpx>=0.28.1
+
+# ---------------------------
+# Data Visualization
+# ---------------------------
+matplotlib>=3.10.0
+plotly>=5.24.1
+
+# ---------------------------
+# Utilities / CLI Output / Logging
+# ---------------------------
+loguru>=0.7.3
+rich>=13.9.4
+
+# ---------------------------
+# Testing
+# ---------------------------
+pytest>=8.3.4
