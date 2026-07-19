@@ -180,6 +180,17 @@ class AIEngine:
                 )
             self._is_initialized = True
             logger.info("AIEngine initialized successfully.")
+        except ValueError as exc:
+            if "Insufficient training samples" in str(exc):
+                # Expected during warm-up before enough monitoring history
+                # exists - main.py's lazy-init retries each cycle until
+                # there's enough data, so this isn't a failure worth an
+                # ERROR-level stack trace.
+                logger.info("AIEngine initialization deferred: %s", exc)
+            else:
+                logger.exception("AIEngine initialization failed: %s", exc)
+            self._is_initialized = False
+            raise
         except Exception as exc:
             logger.exception("AIEngine initialization failed: %s", exc)
             self._is_initialized = False

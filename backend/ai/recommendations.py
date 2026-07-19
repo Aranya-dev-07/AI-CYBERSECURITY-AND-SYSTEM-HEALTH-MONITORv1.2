@@ -53,6 +53,21 @@ class RecommendationSource(str, Enum):
     RULE_BASED = "rule_based"
 
 
+def _safe_severity(value: Optional[str]) -> "Severity":
+    """
+    Safely coerces an arbitrary severity string into this module's
+    Severity enum, falling back to Severity.LOW for anything that isn't
+    a recognized member instead of raising ValueError. Sources across
+    the ai/ package (root_cause.py, anomaly_detection.py) are expected
+    to emit this module's own Low/Medium/High/Critical vocabulary, but
+    this guards against any of them drifting or supplying an
+    unrecognized value without crashing recommendation generation.
+    """
+    if value is not None and value in Severity._value2member_map_:
+        return Severity(value)
+    return Severity.LOW
+
+
 # ai/predictive_alerts.py defines its own Severity enum (Info/Warning/Major/
 # Critical) that is independent of this module's Severity enum (Low/Medium/
 # High/Critical). Predictions arrive with predictive_alerts' severity
@@ -200,7 +215,7 @@ def _from_root_cause(
     recs: list[Recommendation] = []
     for rc in inputs.root_cause_results:
         try:
-            severity = Severity(rc.get("severity", Severity.LOW.value))
+            severity = _safe_severity(rc.get("severity"))
             priority = _calculate_priority(severity, RecommendationSource.ROOT_CAUSE, config)
 
             recs.append(Recommendation(
@@ -236,7 +251,7 @@ def _from_anomalies(
             continue  # already covered with a more specific recommendation
 
         try:
-            severity = Severity(anomaly.get("severity", Severity.LOW.value))
+            severity = _safe_severity(anomaly.get("severity"))
             priority = _calculate_priority(severity, RecommendationSource.ANOMALY_DETECTION, config)
             affected = anomaly.get("affected_metrics", [])
             metric_str = ", ".join(affected) if affected else "system behavior"
@@ -328,8 +343,7 @@ def _from_trends(
 
         metric = trend.get("metric", "a monitored metric")
         try:
-            severity_str = trend.get("severity", Severity.LOW.value)
-            severity = Severity(severity_str) if severity_str in Severity._value2member_map_ else Severity.LOW
+            severity = _safe_severity(trend.get("severity"))
             priority = _calculate_priority(severity, RecommendationSource.TREND_ANALYSIS, config)
 
             recs.append(Recommendation(

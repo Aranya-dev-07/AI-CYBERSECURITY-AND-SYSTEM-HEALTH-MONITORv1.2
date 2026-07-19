@@ -209,6 +209,17 @@ class AnomalyDetectionEngine:
                 len(data), len(self.config.features),
             )
 
+        except ValueError as exc:
+            if "Insufficient training samples" in str(exc) or "Missing required feature columns" in str(exc):
+                # Expected during the warm-up period before enough monitoring
+                # history has accumulated, or if the caller passed a malformed
+                # frame - not a bug, so don't log it as one with a full
+                # traceback. main.py retries training on every cycle until
+                # enough samples exist.
+                logger.info("Anomaly detection training deferred: %s", exc)
+            else:
+                logger.exception("Anomaly detection training failed: %s", exc)
+            raise
         except Exception as exc:
             logger.exception("Anomaly detection training failed: %s", exc)
             raise

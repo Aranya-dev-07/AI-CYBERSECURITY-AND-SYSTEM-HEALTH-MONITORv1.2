@@ -4,7 +4,7 @@ import asyncio
 import signal
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import uvicorn
@@ -199,7 +199,7 @@ class Orchestrator:
     # Monitoring loop
     # ------------------------------------------------------------------
     def _monitoring_cycle(self) -> None:
-        timestamp = datetime.utcnow()
+        timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
         timestamp_iso = timestamp.isoformat()
 
         system_metrics = monitoring_collector.collect_system_metrics()
@@ -304,7 +304,7 @@ class Orchestrator:
     def start(self) -> None:
         logger.info("Starting Lavender Trinetra services...")
 
-        self._session_start = datetime.utcnow()
+        self._session_start = datetime.now(timezone.utc).replace(tzinfo=None)
         self._history_rows = []
         self._process_history_rows = []
         self._last_ai_result = None
@@ -340,7 +340,7 @@ class Orchestrator:
             # monitoring/metrics.py. Calling save_system_report() again
             # here would duplicate the final report row.
             report = monitoring_reports.generate_report_on_stop(
-                session_start=self._session_start or datetime.utcnow(),
+                session_start=self._session_start or datetime.now(timezone.utc).replace(tzinfo=None),
                 alert_tracker=self._alert_tracker,
             )
 
