@@ -117,7 +117,11 @@ function SecurityOverview() {
       if (processRes.status === "fulfilled") setProcessEvents(processRes.value || []);
       if (networkRes.status === "fulfilled") setNetworkEvents(networkRes.value || []);
       if (portRes.status === "fulfilled") setPortEvents(portRes.value || []);
-      if (firewallRes.status === "fulfilled") setFirewall(firewallRes.value);
+      if (firewallRes.status === "fulfilled") {
+        const firewallEvents = firewallRes.value || [];
+        const statusSnapshot = firewallEvents.find((e) => e.type === "firewall_status") || null;
+        setFirewall(statusSnapshot);
+      }
       if (sessionsRes.status === "fulfilled") setSessions(sessionsRes.value || []);
 
       if (results.some((r) => r.status === "rejected")) {
@@ -174,13 +178,17 @@ function SecurityOverview() {
     [portEvents]
   );
 
-  const sessionCounts = useMemo(() => riskCounts(sessions), [sessions]);
+  const activeSessions = useMemo(
+    () => sessions.filter((e) => !e?.type || e.type === "session_active"),
+    [sessions]
+  );
+  const sessionCounts = useMemo(() => riskCounts(activeSessions), [activeSessions]);
   const sortedSessions = useMemo(
     () =>
-      [...sessions].sort(
+      [...activeSessions].sort(
         (a, b) => (RISK_ORDER[a.risk_level] ?? 9) - (RISK_ORDER[b.risk_level] ?? 9)
       ),
-    [sessions]
+    [activeSessions]
   );
 
   const overallScore = useMemo(() => {
@@ -188,13 +196,13 @@ function SecurityOverview() {
       ...processObservations,
       ...connectionEvents,
       ...listeningPorts,
-      ...sessions,
+      ...activeSessions,
     ];
     const counts = riskCounts(combined);
     const firewallPenalty = firewall && firewall.enabled === false ? 20 : firewall && !firewall.available ? 30 : 0;
     const base = overallScoreFromCounts(counts, combined.length);
     return Math.max(0, base - firewallPenalty);
-  }, [processObservations, connectionEvents, listeningPorts, sessions, firewall]);
+  }, [processObservations, connectionEvents, listeningPorts, activeSessions, firewall]);
 
   const overallColor = overallScore >= 80 ? "olive" : overallScore >= 50 ? "magenta" : "red";
   const overallRingColor = overallScore >= 80 ? "olive" : overallScore >= 50 ? "magenta" : "red";
@@ -343,7 +351,7 @@ function SecurityOverview() {
         {/* Active User Sessions */}
         <Card title="Active User Sessions" icon={PiUsersBold}>
           <p className="text-3xl font-semibold text-[var(--color-text-primary,#f1f5f9)]">
-            {sessions.length}
+            {activeSessions.length}
           </p>
           <p className="text-xs text-[var(--color-text-secondary,#64748b)]">active sessions</p>
           <div className="mt-3 flex flex-col gap-1.5">
@@ -359,7 +367,7 @@ function SecurityOverview() {
                 <StatusBadge status={toBadgeStatus(session.risk_level)} size="sm" />
               </div>
             ))}
-            {sessions.length === 0 && (
+            {activeSessions.length === 0 && (
               <p className="text-xs text-[var(--color-text-secondary,#64748b)]">No active sessions.</p>
             )}
           </div>

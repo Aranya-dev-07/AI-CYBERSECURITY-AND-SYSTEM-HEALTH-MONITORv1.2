@@ -16,11 +16,25 @@ from backend.ai import (
     anomaly_detection as ai_anomaly_detection,
 )
 try:
-    from backend.cybersecurity import security_score as cyber_security_score
-except ImportError:
-    cyber_security_score = None
+    from backend.cybersecurity import (
+        security_engine,
+        process_monitor as cyber_process_monitor,
+        network_monitor as cyber_network_monitor,
+        port_monitor as cyber_port_monitor,
+        firewall_monitor as cyber_firewall_monitor,
+        session_monitor as cyber_session_monitor,
+    )
+except ImportError as _cyber_import_error:
+    security_engine = None
+    cyber_process_monitor = None
+    cyber_network_monitor = None
+    cyber_port_monitor = None
+    cyber_firewall_monitor = None
+    cyber_session_monitor = None
     logging.getLogger("lavender_trinetra.routes").warning(
-        "backend.cybersecurity module not found - /cybersecurity/score will return 503 until it is implemented."
+        "backend.cybersecurity package not fully available (%s) - "
+        "/cybersecurity/* endpoints will return 503 until it is complete.",
+        _cyber_import_error,
     )
 
 logger = logging.getLogger("lavender_trinetra.routes")
@@ -172,12 +186,81 @@ async def get_report_detail(report_id: int, db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 # Cybersecurity
 # ---------------------------------------------------------------------------
-@router.get("/cybersecurity/score", response_model=schemas.SecurityScoreResponse)
-async def get_security_score():
-    if cyber_security_score is None:
-        raise HTTPException(status_code=503, detail="Cybersecurity module not yet implemented")
+def _require_cybersecurity_module(module, name: str):
+    if module is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Cybersecurity module '{name}' not yet available",
+        )
+
+
+@router.get("/cybersecurity/status")
+async def get_cybersecurity_status():
+    """Overall security engine status, consumed by SecurityOverview.jsx."""
+    _require_cybersecurity_module(security_engine, "security_engine")
     try:
-        return cyber_security_score.compute_security_score()
+        return security_engine.get_security_status()
     except Exception as exc:
-        logger.exception("Failed to compute security score")
+        logger.exception("Failed to fetch cybersecurity status")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/cybersecurity/processes")
+async def get_cybersecurity_processes():
+    """Process-level security observations from process_monitor.py."""
+    _require_cybersecurity_module(cyber_process_monitor, "process_monitor")
+    try:
+        return cyber_process_monitor.scan()
+    except Exception as exc:
+        logger.exception("Failed to fetch process security events")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/cybersecurity/network")
+async def get_cybersecurity_network():
+    """Network connection and traffic-rate events from network_monitor.py."""
+    _require_cybersecurity_module(cyber_network_monitor, "network_monitor")
+    try:
+        return cyber_network_monitor.scan()
+    except Exception as exc:
+        logger.exception("Failed to fetch network security events")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/cybersecurity/ports")
+async def get_cybersecurity_ports():
+    """Listening-port observations and change events from port_monitor.py."""
+    _require_cybersecurity_module(cyber_port_monitor, "port_monitor")
+    try:
+        return cyber_port_monitor.scan()
+    except Exception as exc:
+        logger.exception("Failed to fetch port security events")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/cybersecurity/firewall")
+async def get_cybersecurity_firewall():
+    """
+    Firewall status/change events from firewall_monitor.py. Returns a
+    list (current status snapshot plus any change events this cycle) -
+    the frontend selects the "firewall_status" entry for the current
+    snapshot, matching the same event-list shape every other
+    cybersecurity endpoint uses.
+    """
+    _require_cybersecurity_module(cyber_firewall_monitor, "firewall_monitor")
+    try:
+        return cyber_firewall_monitor.scan()
+    except Exception as exc:
+        logger.exception("Failed to fetch firewall status")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/cybersecurity/sessions")
+async def get_cybersecurity_sessions():
+    """Active user session observations and login/logout events from session_monitor.py."""
+    _require_cybersecurity_module(cyber_session_monitor, "session_monitor")
+    try:
+        return cyber_session_monitor.scan()
+    except Exception as exc:
+        logger.exception("Failed to fetch session security events")
         raise HTTPException(status_code=500, detail=str(exc))

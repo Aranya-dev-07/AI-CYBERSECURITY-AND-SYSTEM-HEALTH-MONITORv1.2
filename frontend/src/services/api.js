@@ -162,39 +162,39 @@ export async function getAIResults({ limit = 20 } = {}) {
 // CYBERSECURITY
 // =====================================================================
 
-/** getSecurityScore — current composite cybersecurity score. */
-export async function getSecurityScore() {
-  const { data } = await apiClient.get("/cybersecurity/security-score");
+/** getOverallSecurityStatus — cybersecurity engine + component status. */
+export async function getOverallSecurityStatus() {
+  const { data } = await apiClient.get("/cybersecurity/status");
   return data;
 }
 
-/** getThreats — recent detected threats. */
-export async function getThreats() {
-  const { data } = await apiClient.get("/cybersecurity/threats");
+/** getProcessSecurityEvents — process-level security observations. */
+export async function getProcessSecurityEvents() {
+  const { data } = await apiClient.get("/cybersecurity/processes");
   return data;
 }
 
-/** getFirewallStatus — current firewall monitor status. */
+/** getNetworkSecurityEvents — network connection and traffic-rate events. */
+export async function getNetworkSecurityEvents() {
+  const { data } = await apiClient.get("/cybersecurity/network");
+  return data;
+}
+
+/** getPortSecurityEvents — listening-port observations and change events. */
+export async function getPortSecurityEvents() {
+  const { data } = await apiClient.get("/cybersecurity/ports");
+  return data;
+}
+
+/** getFirewallStatus — firewall status snapshot and change events. */
 export async function getFirewallStatus() {
   const { data } = await apiClient.get("/cybersecurity/firewall");
   return data;
 }
 
-/** getPortScanResults — most recent open-port scan results. */
-export async function getPortScanResults() {
-  const { data } = await apiClient.get("/cybersecurity/ports");
-  return data;
-}
-
-/** getIntrusionEvents — recent intrusion detection events. */
-export async function getIntrusionEvents() {
-  const { data } = await apiClient.get("/cybersecurity/intrusions");
-  return data;
-}
-
-/** getVulnerabilities — most recent vulnerability scan results. */
-export async function getVulnerabilities() {
-  const { data } = await apiClient.get("/cybersecurity/vulnerabilities");
+/** getActiveSessions — active user session observations and login/logout events. */
+export async function getActiveSessions() {
+  const { data } = await apiClient.get("/cybersecurity/sessions");
   return data;
 }
 
@@ -225,11 +225,11 @@ export default {
   refreshMetrics,
   getLatestAIResult,
   getAIResults,
-  getSecurityScore,
-  getThreats,
+  getOverallSecurityStatus,
+  getProcessSecurityEvents,
+  getNetworkSecurityEvents,
+  getPortSecurityEvents,
   getFirewallStatus,
-  getPortScanResults,
-  getIntrusionEvents,
-  getVulnerabilities,
+  getActiveSessions,
   getReports,
 };
