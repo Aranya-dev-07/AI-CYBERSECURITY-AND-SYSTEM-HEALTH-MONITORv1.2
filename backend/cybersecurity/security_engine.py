@@ -13,11 +13,53 @@ from backend.cybersecurity import (
     port_monitor,
     firewall_monitor,
     session_monitor,
-    system_integrity,
-    security_logger,
 )
 
 logger = get_logger("lavender_trinetra.cybersecurity.security_engine")
+
+try:
+    from backend.cybersecurity import system_integrity as _system_integrity
+except ImportError:
+    _system_integrity = None
+    logger.warning(
+        "backend.cybersecurity.system_integrity not available - "
+        "integrity_events will be empty until it is implemented."
+    )
+
+try:
+    from backend.cybersecurity import security_logger as _security_logger
+except ImportError:
+    _security_logger = None
+    logger.warning(
+        "backend.cybersecurity.security_logger not available - "
+        "cybersecurity cycle results will not be persisted until it is implemented."
+    )
+
+
+class _NoOpSecurityLogger:
+    """
+    Inline no-op fallback used only when security_logger.py has not
+    been implemented yet, so the rest of the cybersecurity layer keeps
+    functioning (in-memory only) instead of failing to import. Not a
+    new file/module - defined here and replaced transparently once
+    security_logger.py exists.
+    """
+
+    @staticmethod
+    def initialize() -> None:
+        logger.debug("security_logger unavailable - skipping persistence initialization.")
+
+    @staticmethod
+    def record_cycle(cycle_result: dict[str, Any]) -> None:
+        pass
+
+    @staticmethod
+    def finalize() -> None:
+        logger.debug("security_logger unavailable - skipping persistence finalization.")
+
+
+security_logger = _security_logger or _NoOpSecurityLogger()
+system_integrity = _system_integrity
 
 SCAN_INTERVAL_SECONDS = float(getattr(settings, "SCAN_INTERVAL_SECONDS", 60.0))
 
@@ -151,9 +193,12 @@ class SecurityEngine:
             cycle_result["sessions"] = session_monitor.scan()
             self._component_status["session_monitor"] = SecurityStatus.OPERATIONAL
 
-        with safe_execute("system-integrity-cycle"):
-            cycle_result["integrity_events"] = system_integrity.scan()
-            self._component_status["system_integrity"] = SecurityStatus.OPERATIONAL
+        if system_integrity is not None:
+            with safe_execute("system-integrity-cycle"):
+                cycle_result["integrity_events"] = system_integrity.scan()
+                self._component_status["system_integrity"] = SecurityStatus.OPERATIONAL
+        else:
+            self._component_status["system_integrity"] = SecurityStatus.UNAVAILABLE
 
         with safe_execute("security-logger-record"):
             # security_logger owns persistence (database + anything the

@@ -9,6 +9,19 @@ from typing import Any, Optional
 from backend.config import settings
 from backend.core import get_logger
 
+from backend.cybersecurity import security_engine
+from backend.cybersecurity import suspicious_process
+from backend.cybersecurity import vulnerability_scan
+
+try:
+    # NOTE: this module exists on disk as intrusion_detection.py, not
+    # intrusion_detector.py - imported under its real, current name
+    # per the "do not rename files" constraint. Guarded so a rename
+    # either direction doesn't break threat_detector.py's import.
+    from backend.cybersecurity import intrusion_detection
+except ImportError:
+    intrusion_detection = None
+
 logger = get_logger("lavender_trinetra.cybersecurity.threat_detector")
 
 MAX_RECENT_THREATS = int(getattr(settings, "THREAT_DETECTOR_HISTORY_SIZE", 500))
@@ -386,3 +399,70 @@ def get_threat_summary() -> dict[str, Any]:
         "counts": counts,
         "generated_at": datetime.utcnow().isoformat(),
     }
+
+
+# ---------------------------------------------------------------------
+# Coordination facade for main.py
+# ---------------------------------------------------------------------
+# main.py's orchestrator imports this module as "the cybersecurity
+# coordination entrypoint" (see backend/main.py's
+# _load_cybersecurity_engine()) and calls start()/stop()/run_cycle()
+# on it directly, driven by its own single monitoring loop - the same
+# cadence pattern already used for the AI engine. This module is the
+# natural home for that facade since main.py already targets it by
+# name; it does not start security_engine.py's own independent timer
+# thread, to avoid scanning the same data on two separate schedules.
+_active = False
+
+
+def start() -> None:
+    """Called once by main.py when monitoring starts."""
+    global _active
+    _active = True
+    logger.info("Threat detection engine ready (cadence driven by main.py's monitoring loop).")
+
+
+def stop() -> None:
+    """Called once by main.py when monitoring stops."""
+    global _active
+    _active = False
+    logger.info("Threat detection engine stopped.")
+
+
+def run_cycle(
+    metrics_row: Optional[dict[str, Any]] = None,
+    process_rows: Optional[list[dict[str, Any]]] = None,
+) -> dict[str, Any]:
+    """
+    Called by main.py once per monitoring tick. Drives one
+    security_engine.py collection cycle, then runs every Phase 2
+    analysis module (this module's own correlation, suspicious
+    process detection, intrusion detection, vulnerability scanning)
+    against that single cycle_result - no module re-collects data
+    that security_engine.py already gathered this cycle.
+    """
+    if not _active:
+        logger.debug("run_cycle() called while inactive; running anyway (idempotent).")
+
+    cycle_result = security_engine.run_security_cycle(metrics_row, process_rows)
+
+    cycle_result["threats"] = detect_threats(cycle_result)
+    cycle_result["process_alerts"] = suspicious_process.analyze(cycle_result.get("processes", []))
+    cycle_result["vulnerabilities"] = vulnerability_scan.scan_vulnerabilities(
+        cycle_result.get("firewall_events", []), cycle_result.get("open_ports", [])
+    )
+    if intrusion_detection is not None:
+        cycle_result["intrusions"] = intrusion_detection.detect_intrusions(cycle_result)
+    else:
+        cycle_result["intrusions"] = []
+        logger.debug("intrusion_detection module unavailable; skipping intrusion analysis this cycle.")
+
+    return cycle_result
+
+
+def get_status() -> dict[str, Any]:
+    """Live status for FastAPI/dashboard exposure, combining engine and threat-detector state."""
+    status = security_engine.get_security_status()
+    status["threat_summary"] = get_threat_summary()
+    status["active"] = _active
+    return status
