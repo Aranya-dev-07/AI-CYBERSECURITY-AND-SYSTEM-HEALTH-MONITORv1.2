@@ -37,6 +37,36 @@ except ImportError as _cyber_import_error:
         _cyber_import_error,
     )
 
+# Phase 2/3: threat detection, intrusion detection, vulnerability
+# scanning, and the explainable AI security layer built on top of
+# them. All read from in-memory buffers/state maintained by
+# threat_detector.py's run_cycle() (driven by main.py) - these
+# endpoints perform no detection or scoring of their own.
+try:
+    from backend.cybersecurity import threat_detector as cyber_threat_detector
+except ImportError:
+    cyber_threat_detector = None
+
+try:
+    from backend.cybersecurity import intrusion_detection as cyber_intrusion_detection
+except ImportError:
+    cyber_intrusion_detection = None
+
+try:
+    from backend.cybersecurity import vulnerability_scan as cyber_vulnerability_scan
+except ImportError:
+    cyber_vulnerability_scan = None
+
+try:
+    from backend.cybersecurity import security_score as cyber_security_score
+except ImportError:
+    cyber_security_score = None
+
+try:
+    from backend.cybersecurity import threat_classifier as cyber_threat_classifier
+except ImportError:
+    cyber_threat_classifier = None
+
 logger = logging.getLogger("lavender_trinetra.routes")
 
 router = APIRouter(prefix="/api", tags=["Lavender-Trinetra"])
@@ -263,4 +293,126 @@ async def get_cybersecurity_sessions():
         return cyber_session_monitor.scan()
     except Exception as exc:
         logger.exception("Failed to fetch session security events")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Cybersecurity - Threat Detection (threat_detector.py)
+# ---------------------------------------------------------------------------
+@router.get("/cybersecurity/threats/summary")
+async def get_threat_summary():
+    """Counts of recent threats by severity, consumed by ThreatOverview.jsx."""
+    _require_cybersecurity_module(cyber_threat_detector, "threat_detector")
+    try:
+        return cyber_threat_detector.get_threat_summary()
+    except Exception as exc:
+        logger.exception("Failed to fetch threat summary")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/cybersecurity/threats/active")
+async def get_active_threats(min_severity: str = Query(default="Medium")):
+    """Recent threats at or above the given severity, consumed by ThreatOverview.jsx."""
+    _require_cybersecurity_module(cyber_threat_detector, "threat_detector")
+    try:
+        return cyber_threat_detector.get_active_threats(min_severity=min_severity)
+    except Exception as exc:
+        logger.exception("Failed to fetch active threats")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/cybersecurity/threats/recent")
+async def get_recent_threats(limit: int = Query(default=100, ge=1, le=500)):
+    """Most recent threats newest-first, consumed by ThreatOverview.jsx."""
+    _require_cybersecurity_module(cyber_threat_detector, "threat_detector")
+    try:
+        return cyber_threat_detector.get_recent_threats(limit=limit)
+    except Exception as exc:
+        logger.exception("Failed to fetch recent threats")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Cybersecurity - Intrusion Detection (intrusion_detection.py)
+# ---------------------------------------------------------------------------
+@router.get("/cybersecurity/intrusions")
+async def get_recent_intrusions(limit: int = Query(default=100, ge=1, le=500)):
+    """Most recent intrusion alerts newest-first, consumed by Intrusion.jsx."""
+    _require_cybersecurity_module(cyber_intrusion_detection, "intrusion_detection")
+    try:
+        return cyber_intrusion_detection.get_recent_intrusions(limit=limit)
+    except Exception as exc:
+        logger.exception("Failed to fetch recent intrusions")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Cybersecurity - Vulnerability Scan (vulnerability_scan.py)
+# ---------------------------------------------------------------------------
+@router.get("/cybersecurity/vulnerabilities")
+async def get_recent_vulnerabilities(limit: int = Query(default=100, ge=1, le=500)):
+    """Most recent vulnerability findings newest-first, consumed by Vulnerabilities.jsx."""
+    _require_cybersecurity_module(cyber_vulnerability_scan, "vulnerability_scan")
+    try:
+        return cyber_vulnerability_scan.get_recent_findings(limit=limit)
+    except Exception as exc:
+        logger.exception("Failed to fetch recent vulnerabilities")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/cybersecurity/vulnerabilities/summary")
+async def get_vulnerability_summary():
+    """Counts of recent vulnerability findings by severity, consumed by Vulnerabilities.jsx."""
+    _require_cybersecurity_module(cyber_vulnerability_scan, "vulnerability_scan")
+    try:
+        return cyber_vulnerability_scan.get_vulnerability_summary()
+    except Exception as exc:
+        logger.exception("Failed to fetch vulnerability summary")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Cybersecurity - Explainable AI Security Score (security_score.py, threat_classifier.py)
+# ---------------------------------------------------------------------------
+@router.get("/cybersecurity/score")
+async def get_security_score():
+    """Latest explainable security score/grade/breakdown, consumed by SecurityScore.jsx."""
+    _require_cybersecurity_module(cyber_security_score, "security_score")
+    try:
+        return cyber_security_score.get_latest_score()
+    except Exception as exc:
+        logger.exception("Failed to fetch security score")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/cybersecurity/score/history")
+async def get_security_score_history(limit: int = Query(default=100, ge=1, le=500)):
+    """Recent security score history newest-first, for trend charts."""
+    _require_cybersecurity_module(cyber_security_score, "security_score")
+    try:
+        return cyber_security_score.get_score_history(limit=limit)
+    except Exception as exc:
+        logger.exception("Failed to fetch security score history")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/cybersecurity/classifications/summary")
+async def get_threat_classification_summary():
+    """Counts of recent threat classifications by category, consumed by SecurityScore.jsx."""
+    _require_cybersecurity_module(cyber_threat_classifier, "threat_classifier")
+    try:
+        return cyber_threat_classifier.get_classification_summary()
+    except Exception as exc:
+        logger.exception("Failed to fetch threat classification summary")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/cybersecurity/classifications")
+async def get_threat_classifications(limit: int = Query(default=100, ge=1, le=500)):
+    """Most recent threat classifications newest-first."""
+    _require_cybersecurity_module(cyber_threat_classifier, "threat_classifier")
+    try:
+        return cyber_threat_classifier.get_recent_classifications(limit=limit)
+    except Exception as exc:
+        logger.exception("Failed to fetch threat classifications")
         raise HTTPException(status_code=500, detail=str(exc))

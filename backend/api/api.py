@@ -7,6 +7,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.config import settings
 from backend.api.routes import router as api_router
 
+# Phase 3 explainable-AI security modules each own a small self-contained
+# FastAPI router (already prefixed with /api/cybersecurity/...) exposing
+# their live/recent/summary/history endpoints. Mounted directly on the
+# app, guarded the same way backend.cybersecurity is guarded in routes.py,
+# so the rest of the API still comes up if either module is unavailable.
+try:
+    from backend.cybersecurity.attack_patterns import router as attack_patterns_router
+except ImportError:
+    attack_patterns_router = None
+
+try:
+    from backend.cybersecurity.security_recommendations import router as security_recommendations_router
+except ImportError:
+    security_recommendations_router = None
+
 logging.basicConfig(
     level=getattr(logging, getattr(settings, "LOG_LEVEL", "INFO"), logging.INFO),
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -86,6 +101,22 @@ def create_app() -> FastAPI:
     )
 
     application.include_router(api_router)
+
+    if attack_patterns_router is not None:
+        application.include_router(attack_patterns_router)
+    else:
+        logger.warning(
+            "backend.cybersecurity.attack_patterns not available - "
+            "/api/cybersecurity/attack-patterns/* endpoints will not be mounted."
+        )
+
+    if security_recommendations_router is not None:
+        application.include_router(security_recommendations_router)
+    else:
+        logger.warning(
+            "backend.cybersecurity.security_recommendations not available - "
+            "/api/cybersecurity/recommendations/* endpoints will not be mounted."
+        )
 
     @application.get("/", tags=["Root"])
     async def root():

@@ -22,6 +22,30 @@ try:
 except ImportError:
     intrusion_detection = None
 
+# Phase 3 (explainable AI security layer) - consumes this module's and
+# intrusion_detection's output; never re-collects or re-detects
+# anything itself. Guarded the same way as intrusion_detection above
+# so threat_detector.py keeps functioning if any of these are absent.
+try:
+    from backend.cybersecurity import threat_classifier
+except ImportError:
+    threat_classifier = None
+
+try:
+    from backend.cybersecurity import security_score
+except ImportError:
+    security_score = None
+
+try:
+    from backend.cybersecurity import attack_patterns
+except ImportError:
+    attack_patterns = None
+
+try:
+    from backend.cybersecurity import security_recommendations
+except ImportError:
+    security_recommendations = None
+
 logger = get_logger("lavender_trinetra.cybersecurity.threat_detector")
 
 MAX_RECENT_THREATS = int(getattr(settings, "THREAT_DETECTOR_HISTORY_SIZE", 500))
@@ -418,6 +442,10 @@ _active = False
 def start() -> None:
     """Called once by main.py when monitoring starts."""
     global _active
+    if attack_patterns is not None and hasattr(attack_patterns, "start"):
+        attack_patterns.start()
+    if security_recommendations is not None and hasattr(security_recommendations, "start"):
+        security_recommendations.start()
     _active = True
     logger.info("Threat detection engine ready (cadence driven by main.py's monitoring loop).")
 
@@ -425,6 +453,10 @@ def start() -> None:
 def stop() -> None:
     """Called once by main.py when monitoring stops."""
     global _active
+    if attack_patterns is not None and hasattr(attack_patterns, "stop"):
+        attack_patterns.stop()
+    if security_recommendations is not None and hasattr(security_recommendations, "stop"):
+        security_recommendations.stop()
     _active = False
     logger.info("Threat detection engine stopped.")
 
@@ -448,14 +480,67 @@ def run_cycle(
 
     cycle_result["threats"] = detect_threats(cycle_result)
     cycle_result["process_alerts"] = suspicious_process.analyze(cycle_result.get("processes", []))
-    cycle_result["vulnerabilities"] = vulnerability_scan.scan_vulnerabilities(
-        cycle_result.get("firewall_events", []), cycle_result.get("open_ports", [])
+    # NOTE: the public entry point is scan(), not scan_vulnerabilities();
+    # it also accepts this cycle's process events for suspicious-service
+    # checks, in addition to the firewall/port events already passed.
+    cycle_result["vulnerabilities"] = vulnerability_scan.scan(
+        cycle_result.get("firewall_events", []),
+        cycle_result.get("open_ports", []),
+        cycle_result.get("processes", []),
     )
     if intrusion_detection is not None:
         cycle_result["intrusions"] = intrusion_detection.detect_intrusions(cycle_result)
     else:
         cycle_result["intrusions"] = []
         logger.debug("intrusion_detection module unavailable; skipping intrusion analysis this cycle.")
+
+    # ------------------------------------------------------------
+    # Phase 3 - explainable AI security layer. Each module below
+    # consumes only what has already been produced above in this same
+    # cycle_result (threats, intrusions, vulnerabilities) - none of
+    # them re-collect or re-detect anything themselves.
+    # ------------------------------------------------------------
+    if threat_classifier is not None:
+        try:
+            cycle_result["threat_classifications"] = threat_classifier.classify_threats(
+                cycle_result.get("threats", [])
+            )
+        except Exception:
+            cycle_result["threat_classifications"] = []
+            logger.exception("threat_classifier failed this cycle.")
+    else:
+        cycle_result["threat_classifications"] = []
+        logger.debug("threat_classifier module unavailable; skipping classification this cycle.")
+
+    if security_score is not None:
+        try:
+            cycle_result["security_score"] = security_score.compute_security_score(cycle_result)
+        except Exception:
+            cycle_result["security_score"] = None
+            logger.exception("security_score computation failed this cycle.")
+    else:
+        cycle_result["security_score"] = None
+        logger.debug("security_score module unavailable; skipping scoring this cycle.")
+
+    if attack_patterns is not None:
+        try:
+            attack_patterns.run_cycle(cycle_result)
+        except Exception:
+            cycle_result["attack_patterns"] = []
+            logger.exception("attack_patterns analysis failed this cycle.")
+    else:
+        cycle_result["attack_patterns"] = []
+        logger.debug("attack_patterns module unavailable; skipping pattern analysis this cycle.")
+
+    if security_recommendations is not None:
+        try:
+            security_recommendations.run_cycle(cycle_result)
+        except Exception:
+            cycle_result["security_recommendations"] = []
+            logger.exception("security_recommendations generation failed this cycle.")
+    else:
+        cycle_result["security_recommendations"] = []
+        logger.debug("security_recommendations module unavailable; skipping recommendations this cycle.")
 
     return cycle_result
 
@@ -465,4 +550,8 @@ def get_status() -> dict[str, Any]:
     status = security_engine.get_security_status()
     status["threat_summary"] = get_threat_summary()
     status["active"] = _active
+    if attack_patterns is not None and hasattr(attack_patterns, "get_status"):
+        status["attack_patterns"] = attack_patterns.get_status()
+    if security_recommendations is not None and hasattr(security_recommendations, "get_status"):
+        status["security_recommendations"] = security_recommendations.get_status()
     return status

@@ -198,6 +198,147 @@ export async function getActiveSessions() {
   return data;
 }
 
+/**
+ * getRecentFirewallEvents — same underlying data as getFirewallStatus
+ * (firewall_monitor.py returns one combined list: current status
+ * snapshot plus any change events this cycle); exposed under both
+ * names since Firewall.jsx fetches status and recent events separately.
+ */
+export async function getRecentFirewallEvents() {
+  const { data } = await apiClient.get("/cybersecurity/firewall");
+  return data;
+}
+
+/** getListeningPorts — same underlying data as getPortSecurityEvents, filtered client-side by Ports.jsx. */
+export async function getListeningPorts() {
+  const { data } = await apiClient.get("/cybersecurity/ports");
+  return data;
+}
+
+/** getSuspiciousPorts — same underlying data as getPortSecurityEvents, filtered client-side by Ports.jsx. */
+export async function getSuspiciousPorts() {
+  const { data } = await apiClient.get("/cybersecurity/ports");
+  return data;
+}
+
+/** getRecentPortEvents — same underlying data as getPortSecurityEvents, filtered client-side by Ports.jsx. */
+export async function getRecentPortEvents() {
+  const { data } = await apiClient.get("/cybersecurity/ports");
+  return data;
+}
+
+// =====================================================================
+// CYBERSECURITY - THREAT DETECTION (threat_detector.py)
+// =====================================================================
+
+/** getThreatSummary — counts of recent threats by severity. */
+export async function getThreatSummary() {
+  const { data } = await apiClient.get("/cybersecurity/threats/summary");
+  return data;
+}
+
+/** getActiveThreats — recent threats at or above the given severity ("Low"|"Medium"|"High"|"Critical"). */
+export async function getActiveThreats(minSeverity = "Medium") {
+  const { data } = await apiClient.get("/cybersecurity/threats/active", {
+    params: buildParams({ min_severity: minSeverity }),
+  });
+  return data;
+}
+
+/** getRecentThreats — most recent threats, newest first. */
+export async function getRecentThreats(limit = 100) {
+  const { data } = await apiClient.get("/cybersecurity/threats/recent", {
+    params: buildParams({ limit }),
+  });
+  return data;
+}
+
+// =====================================================================
+// CYBERSECURITY - INTRUSION DETECTION (intrusion_detection.py)
+// =====================================================================
+
+/** getRecentIntrusions — most recent intrusion alerts, newest first. */
+export async function getRecentIntrusions(limit = 100) {
+  const { data } = await apiClient.get("/cybersecurity/intrusions", {
+    params: buildParams({ limit }),
+  });
+  return data;
+}
+
+// =====================================================================
+// CYBERSECURITY - VULNERABILITY SCAN (vulnerability_scan.py)
+// =====================================================================
+
+/** getRecentVulnerabilities — most recent vulnerability findings, newest first. */
+export async function getRecentVulnerabilities(limit = 100) {
+  const { data } = await apiClient.get("/cybersecurity/vulnerabilities", {
+    params: buildParams({ limit }),
+  });
+  return data;
+}
+
+/** getVulnerabilitySummary — counts of recent vulnerability findings by severity. */
+export async function getVulnerabilitySummary() {
+  const { data } = await apiClient.get("/cybersecurity/vulnerabilities/summary");
+  return data;
+}
+
+// =====================================================================
+// CYBERSECURITY - EXPLAINABLE AI SECURITY SCORE
+// (security_score.py, threat_classifier.py, attack_patterns.py,
+// security_recommendations.py) — sole data source for SecurityScore.jsx.
+// =====================================================================
+
+/** getSecurityScore — latest explainable security score, grade and factor breakdown. */
+export async function getSecurityScore() {
+  const { data } = await apiClient.get("/cybersecurity/score");
+  return data;
+}
+
+/** getSecurityScoreHistory — recent security score history, newest first. */
+export async function getSecurityScoreHistory({ limit = 100 } = {}) {
+  const { data } = await apiClient.get("/cybersecurity/score/history", {
+    params: buildParams({ limit }),
+  });
+  return data;
+}
+
+/** getThreatClassificationSummary — counts of recent threat classifications by category. */
+export async function getThreatClassificationSummary() {
+  const { data } = await apiClient.get("/cybersecurity/classifications/summary");
+  return data;
+}
+
+/** getThreatClassifications — most recent individual threat classifications, newest first. */
+export async function getThreatClassifications({ limit = 100 } = {}) {
+  const { data } = await apiClient.get("/cybersecurity/classifications", {
+    params: buildParams({ limit }),
+  });
+  return data;
+}
+
+/** getAttackPatternSummary — counts of recent correlated attack patterns by severity/category. */
+export async function getAttackPatternSummary() {
+  const { data } = await apiClient.get("/cybersecurity/attack-patterns/summary");
+  return data;
+}
+
+/** getRecentAttackPatterns — most recent correlated attack patterns, newest first. */
+export async function getRecentAttackPatterns({ limit = 100 } = {}) {
+  const { data } = await apiClient.get("/cybersecurity/attack-patterns/recent", {
+    params: buildParams({ limit }),
+  });
+  return data;
+}
+
+/** getSecurityRecommendations — live, prioritized, explainable security recommendations. */
+export async function getSecurityRecommendations({ limit = 100 } = {}) {
+  const { data } = await apiClient.get("/cybersecurity/recommendations/live", {
+    params: buildParams({ limit }),
+  });
+  return data;
+}
+
 // =====================================================================
 // REPORTS
 // =====================================================================
@@ -231,5 +372,22 @@ export default {
   getPortSecurityEvents,
   getFirewallStatus,
   getActiveSessions,
+  getRecentFirewallEvents,
+  getListeningPorts,
+  getSuspiciousPorts,
+  getRecentPortEvents,
+  getThreatSummary,
+  getActiveThreats,
+  getRecentThreats,
+  getRecentIntrusions,
+  getRecentVulnerabilities,
+  getVulnerabilitySummary,
+  getSecurityScore,
+  getSecurityScoreHistory,
+  getThreatClassificationSummary,
+  getThreatClassifications,
+  getAttackPatternSummary,
+  getRecentAttackPatterns,
+  getSecurityRecommendations,
   getReports,
 };
