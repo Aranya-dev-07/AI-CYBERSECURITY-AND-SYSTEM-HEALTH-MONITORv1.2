@@ -1,23 +1,26 @@
 """
-backend/cybersecurity/security_reports.py
+security_reports.py
 
-Security Reports — Lavender Trinetra Cybersecurity Platform
+Comprehensive Cybersecurity Reporting — Lavender Trinetra Platform
 =====================================================================
 
-Generates comprehensive cybersecurity reports from historical data
-already persisted in PostgreSQL. This module performs NO monitoring,
-detection, scanning, scoring, or AI analysis of its own - it strictly
-reads and aggregates data already produced and stored by:
+Generates comprehensive cybersecurity reports by reading data already
+produced and persisted by Phases 1-4 of the cybersecurity layer. This
+module performs NO monitoring, detection, scanning, scoring, or AI
+analysis of its own - it strictly aggregates results already computed
+by:
 
-    - incident_logger.py          (backend.cybersecurity.SecurityIncident)
-    - security_recommendations.py (backend.cybersecurity.SecurityRecommendationRecord)
-    - security_score.py           (in-memory score history, pending
-                                    PostgreSQL persistence - see the
-                                    `security_history` integration hook
-                                    below, wired in a later phase)
+    - threat_detector.py            (get_threat_summary - live counts)
+    - vulnerability_scan.py         (get_vulnerability_summary - live counts)
+    - incident_logger.py            (list_incidents, get_incident_summary)
+    - security_recommendations.py   (get_recommendation_summary,
+                                       get_recommendations_from_db)
+    - security_history.py           (get_threat_timeline, get_incident_timeline,
+                                       get_security_score_history,
+                                       get_vulnerability_trends,
+                                       get_latest_score - all PostgreSQL-backed)
 
 Report types produced:
-
     - Security Summary
     - Threat Statistics
     - Incident Summary
@@ -25,66 +28,59 @@ Report types produced:
     - Security Score Trends
     - Recommendation Summary
 
-Also supports "export preparation" - flattening any of the above (or
-a combined full report) into a serializable envelope suitable for
-handoff to the frontend's Reports -> Export workspace (CSV/JSON).
+Also supports export preparation - flattening any of the above (or a
+combined full report) into a serializable envelope for the frontend's
+Reports -> Export workflow (SecurityReports.jsx), without performing
+any file writing/serialization to disk itself.
+
+Exposure: a self-contained FastAPI router (`/api/cybersecurity/reports/*`),
+mounted the same way attack_patterns.py, security_recommendations.py,
+incident_logger.py and security_history.py mount their own routers in
+api/api.py.
 
 Integrates with:
-    - backend/config.py                          (settings)
-    - backend/core.py                             (logging, safe_execute)
-    - backend/database/database.py                (get_db, session_scope)
-    - backend/cybersecurity/incident_logger.py     (SecurityIncident, stats)
+    - backend/config.py                                  (settings)
+    - backend/core.py                                     (logging, safe_execute)
+    - backend/database/database.py                        (get_db, session_scope)
+    - backend/cybersecurity/incident_logger.py
     - backend/cybersecurity/security_recommendations.py
-      (SecurityRecommendationRecord, get_recommendations_from_db)
-    - backend/cybersecurity/security_score.py      (in-memory score history)
-    - backend/cybersecurity/security_history.py    (future: PostgreSQL-backed
-      score/threat/vulnerability history - guarded import, wired later)
+    - backend/cybersecurity/security_history.py
+    - backend/cybersecurity/threat_detector.py             (guarded)
+    - backend/cybersecurity/vulnerability_scan.py          (guarded)
 
 Author: Lavender Trinetra Backend Engineering
 """
 
 from __future__ import annotations
 
-from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
-from sqlalchemy import func
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.config import settings
-from backend.core import get_logger, safe_execute, utc_now
+from backend.core import get_logger, safe_execute
 
 from backend.database.database import get_db, session_scope
 
-from backend.cybersecurity.incident_logger import (
-    IncidentSeverity,
-    IncidentStatus,
-    SecurityIncident,
-    get_incident_statistics,
-    list_incidents,
-)
-from backend.cybersecurity.security_recommendations import (
-    SecurityRecommendationRecord,
-    get_recommendation_summary,
-    get_recommendations_from_db,
-)
-from backend.cybersecurity import security_score
+from backend.cybersecurity import incident_logger
+from backend.cybersecurity import security_recommendations
+from backend.cybersecurity import security_history
 
-# ---------------------------------------------------------------------
-# Future integration point (wired in a later phase): a PostgreSQL-backed
-# history module for security score / threat / vulnerability snapshots.
-# Guarded so this module works today against in-memory security_score
-# history and the SecurityIncident table, and transparently upgrades
-# to full DB-backed trend data once security_history.py exists.
-# ---------------------------------------------------------------------
+# Guarded per the existing backend/cybersecurity/ convention - live
+# threat/vulnerability counts are read from these modules' in-memory
+# summaries; historical (PostgreSQL-backed) equivalents come from
+# security_history.py regardless of whether these are importable.
 try:
-    from backend.cybersecurity import security_history
-except ImportError:  # pragma: no cover - not yet implemented
-    security_history = None
+    from backend.cybersecurity import threat_detector
+except ImportError:  # pragma: no cover - defensive
+    threat_detector = None
+
+try:
+    from backend.cybersecurity import vulnerability_scan
+except ImportError:  # pragma: no cover - defensive
+    vulnerability_scan = None
 
 logger = get_logger("lavender_trinetra.cybersecurity.security_reports")
 
@@ -95,71 +91,59 @@ logger = get_logger("lavender_trinetra.cybersecurity.security_reports")
 
 REPORT_DEFAULT_WINDOW_DAYS = int(getattr(settings, "SECURITY_REPORT_DEFAULT_WINDOW_DAYS", 7))
 REPORT_MAX_WINDOW_DAYS = int(getattr(settings, "SECURITY_REPORT_MAX_WINDOW_DAYS", 365))
-REPORT_DEFAULT_LIMIT = int(getattr(settings, "SECURITY_REPORT_DEFAULT_LIMIT", 200))
+REPORT_DEFAULT_LIMIT = int(getattr(settings, "SECURITY_REPORT_DEFAULT_LIMIT", 100))
 REPORT_MAX_LIMIT = int(getattr(settings, "SECURITY_REPORT_MAX_LIMIT", 1000))
-
-# Categories/source modules in SecurityIncident that represent
-# "threats" vs "vulnerabilities", per incident_logger.record_incidents_from_cycle().
-_THREAT_SOURCE_MODULES = frozenset({"threat_detector", "intrusion_detector", "security_score"})
-_VULNERABILITY_SOURCE_MODULE = "vulnerability_scan"
 
 _SUPPORTED_EXPORT_FORMATS = frozenset({"json", "csv"})
 
 
-def _window_since(days: Optional[int]) -> datetime:
-    resolved_days = min(max(1, days or REPORT_DEFAULT_WINDOW_DAYS), REPORT_MAX_WINDOW_DAYS)
-    return (utc_now() - timedelta(days=resolved_days)).replace(tzinfo=None)
+def _resolved_window(window_days: Optional[int]) -> int:
+    return min(max(1, window_days or REPORT_DEFAULT_WINDOW_DAYS), REPORT_MAX_WINDOW_DAYS)
+
+
+def _resolved_limit(limit: int) -> int:
+    return max(1, min(limit, REPORT_MAX_LIMIT))
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 # =====================================================================
 # SECURITY SUMMARY
 # =====================================================================
 
-def generate_security_summary(db: Optional[Session] = None, window_days: Optional[int] = None) -> dict[str, Any]:
+def generate_security_summary(window_days: Optional[int] = None) -> dict[str, Any]:
     """
-    Produces a single top-level "at a glance" security summary,
-    combining incident statistics, the latest security score, and
-    recommendation counts. Intended for the Dashboard/Reports overview.
+    Top-level "at a glance" security summary combining incident
+    statistics, the latest persisted security score, and recommendation
+    counts - for the Dashboard/Reports overview.
     """
     try:
-        since = _window_since(window_days)
+        incident_stats = incident_logger.get_incident_summary()
+        recommendation_stats = security_recommendations.get_recommendation_summary()
+        latest_score = security_history.get_latest_score()
 
-        with safe_execute("generate_security_summary", reraise=True):
-            incident_stats = get_incident_statistics(db=db)
-            recommendation_stats = get_recommendation_summary()
-            latest_score = _get_latest_score()
+        critical_open = sum(
+            1
+            for incident in incident_logger.list_incidents(
+                limit=incident_logger.MAX_INCIDENT_HISTORY, severity="Critical"
+            )
+            if incident.get("status") != incident_logger.IncidentStatus.RESOLVED
+        )
 
-            with _resolve_session(db) as (session, _owns_session):
-                incidents_in_window = (
-                    session.query(func.count(SecurityIncident.incident_id))
-                    .filter(SecurityIncident.timestamp >= since)
-                    .scalar()
-                    or 0
-                )
-                critical_open = (
-                    session.query(func.count(SecurityIncident.incident_id))
-                    .filter(
-                        SecurityIncident.status != IncidentStatus.RESOLVED,
-                        SecurityIncident.severity == IncidentSeverity.CRITICAL,
-                    )
-                    .scalar()
-                    or 0
-                )
-
-            summary = {
-                "generated_at": utc_now().isoformat(),
-                "window_days": min(max(1, window_days or REPORT_DEFAULT_WINDOW_DAYS), REPORT_MAX_WINDOW_DAYS),
-                "incident_totals": incident_stats,
-                "incidents_in_window": incidents_in_window,
-                "critical_open_incidents": critical_open,
-                "latest_security_score": latest_score,
-                "recommendation_totals": recommendation_stats,
-            }
+        summary = {
+            "generated_at": _now_iso(),
+            "window_days": _resolved_window(window_days),
+            "incident_totals": incident_stats,
+            "critical_open_incidents": critical_open,
+            "latest_security_score": latest_score,
+            "recommendation_totals": recommendation_stats,
+        }
 
         logger.info(
-            "Security summary generated: %d total incident(s), %d critical open, latest score=%s",
+            "Security summary generated: %d total incident(s), latest score=%s",
             incident_stats.get("total_incidents", 0),
-            critical_open,
             latest_score.get("score") if latest_score else None,
         )
         return summary
@@ -174,55 +158,58 @@ def generate_security_summary(db: Optional[Session] = None, window_days: Optiona
 # =====================================================================
 
 def generate_threat_statistics(
-    db: Optional[Session] = None,
     window_days: Optional[int] = None,
+    limit: int = REPORT_DEFAULT_LIMIT,
+    db: Optional[Session] = None,
 ) -> dict[str, Any]:
     """
-    Aggregates historical threat-related incidents (as confirmed and
-    persisted by incident_logger.py from threat_detector.py,
-    intrusion_detector.py, and security_score.py) into statistics by
-    severity, category, and source module over the requested window.
+    Historical threat statistics from security_history.py's PostgreSQL-
+    backed threat timeline, plus threat_detector.py's live severity
+    summary for context. Performs no detection of its own.
     """
     try:
-        since = _window_since(window_days)
+        resolved_window = _resolved_window(window_days)
+        resolved_limit = _resolved_limit(limit)
 
-        with _resolve_session(db) as (session, _owns_session):
-            rows = (
-                session.query(SecurityIncident)
-                .filter(
-                    SecurityIncident.source_module.in_(_THREAT_SOURCE_MODULES),
-                    SecurityIncident.timestamp >= since,
-                )
-                .order_by(SecurityIncident.timestamp.desc())
-                .all()
-            )
+        timeline = security_history.get_threat_timeline(
+            window_days=resolved_window, limit=resolved_limit, db=db
+        )
+        events = timeline.get("timeline", [])
 
-        by_severity: dict[str, int] = defaultdict(int)
-        by_category: dict[str, int] = defaultdict(int)
-        by_source: dict[str, int] = defaultdict(int)
-        daily_counts: dict[str, int] = defaultdict(int)
+        by_severity: dict[str, int] = {}
+        by_category: dict[str, int] = {}
+        by_source: dict[str, int] = {}
+        daily_counts: dict[str, int] = {}
 
-        for row in rows:
-            by_severity[row.severity] += 1
-            by_category[row.category] += 1
-            by_source[row.source_module] += 1
-            if row.timestamp:
-                daily_counts[row.timestamp.date().isoformat()] += 1
+        for event in events:
+            severity = event.get("severity", "Low")
+            category = event.get("category", "unknown")
+            source = event.get("source_module", "unknown")
+            by_severity[severity] = by_severity.get(severity, 0) + 1
+            by_category[category] = by_category.get(category, 0) + 1
+            by_source[source] = by_source.get(source, 0) + 1
+            timestamp = event.get("timestamp")
+            if timestamp:
+                day = str(timestamp)[:10]
+                daily_counts[day] = daily_counts.get(day, 0) + 1
+
+        live_summary = threat_detector.get_threat_summary() if threat_detector is not None else None
 
         result = {
-            "generated_at": utc_now().isoformat(),
-            "window_days": min(max(1, window_days or REPORT_DEFAULT_WINDOW_DAYS), REPORT_MAX_WINDOW_DAYS),
-            "total_threats": len(rows),
-            "by_severity": dict(by_severity),
-            "by_category": dict(by_category),
-            "by_source_module": dict(by_source),
+            "generated_at": _now_iso(),
+            "window_days": resolved_window,
+            "total_threats": timeline.get("event_count", len(events)),
+            "by_severity": by_severity,
+            "by_category": by_category,
+            "by_source_module": by_source,
             "daily_counts": dict(sorted(daily_counts.items())),
+            "live_summary": live_summary,
         }
 
-        logger.info("Threat statistics generated: %d threat-related incident(s) in window.", len(rows))
+        logger.info("Threat statistics generated: %d threat-related event(s) in window.", len(events))
         return result
 
-    except SQLAlchemyError as exc:
+    except Exception as exc:
         logger.exception("Failed to generate threat statistics: %s", exc)
         raise
 
@@ -231,27 +218,26 @@ def generate_threat_statistics(
 # INCIDENT SUMMARY
 # =====================================================================
 
-def generate_incident_summary(
-    db: Optional[Session] = None,
-    limit: int = REPORT_DEFAULT_LIMIT,
-) -> dict[str, Any]:
+def generate_incident_summary(limit: int = REPORT_DEFAULT_LIMIT) -> dict[str, Any]:
     """
-    Produces a full incident-management summary: aggregate statistics
-    plus the most recent incidents, for the Reports workspace.
+    Full incident-management summary: aggregate statistics plus the
+    most recent incidents, for the Reports workspace.
     """
     try:
-        capped_limit = max(1, min(limit, REPORT_MAX_LIMIT))
-        stats = get_incident_statistics(db=db)
-        recent = list_incidents(limit=capped_limit, db=db)
+        resolved_limit = _resolved_limit(limit)
+        stats = incident_logger.get_incident_summary()
+        recent = incident_logger.list_incidents(limit=resolved_limit)
 
         result = {
-            "generated_at": utc_now().isoformat(),
+            "generated_at": _now_iso(),
             "statistics": stats,
             "recent_incidents": recent,
         }
 
-        logger.info("Incident summary generated: %d total, %d returned in recent list.",
-                    stats.get("total_incidents", 0), len(recent))
+        logger.info(
+            "Incident summary generated: %d total, %d returned in recent list.",
+            stats.get("total_incidents", 0), len(recent),
+        )
         return result
 
     except Exception as exc:
@@ -264,52 +250,32 @@ def generate_incident_summary(
 # =====================================================================
 
 def generate_vulnerability_summary(
-    db: Optional[Session] = None,
     window_days: Optional[int] = None,
+    db: Optional[Session] = None,
 ) -> dict[str, Any]:
     """
-    Aggregates historical vulnerability-related incidents (confirmed
-    and persisted by incident_logger.py from vulnerability_scan.py
-    findings) into statistics by severity and category over the
-    requested window.
+    Historical vulnerability trend data from security_history.py's
+    PostgreSQL-backed view, plus vulnerability_scan.py's live severity
+    summary for context. Performs no scanning of its own.
     """
     try:
-        since = _window_since(window_days)
-
-        with _resolve_session(db) as (session, _owns_session):
-            rows = (
-                session.query(SecurityIncident)
-                .filter(
-                    SecurityIncident.source_module == _VULNERABILITY_SOURCE_MODULE,
-                    SecurityIncident.timestamp >= since,
-                )
-                .order_by(SecurityIncident.timestamp.desc())
-                .all()
-            )
-
-        by_severity: dict[str, int] = defaultdict(int)
-        by_category: dict[str, int] = defaultdict(int)
-        unresolved_count = 0
-
-        for row in rows:
-            by_severity[row.severity] += 1
-            by_category[row.category] += 1
-            if row.status != IncidentStatus.RESOLVED:
-                unresolved_count += 1
+        resolved_window = _resolved_window(window_days)
+        trends = security_history.get_vulnerability_trends(window_days=resolved_window, db=db)
+        live_summary = vulnerability_scan.get_vulnerability_summary() if vulnerability_scan is not None else None
 
         result = {
-            "generated_at": utc_now().isoformat(),
-            "window_days": min(max(1, window_days or REPORT_DEFAULT_WINDOW_DAYS), REPORT_MAX_WINDOW_DAYS),
-            "total_findings": len(rows),
-            "unresolved_findings": unresolved_count,
-            "by_severity": dict(by_severity),
-            "by_category": dict(by_category),
+            "generated_at": _now_iso(),
+            "window_days": resolved_window,
+            "total_findings": trends.get("total_findings", 0),
+            "by_category": trends.get("by_category", {}),
+            "trend": trends.get("trend", []),
+            "live_summary": live_summary,
         }
 
-        logger.info("Vulnerability summary generated: %d finding(s) in window.", len(rows))
+        logger.info("Vulnerability summary generated: %d finding(s) in window.", result["total_findings"])
         return result
 
-    except SQLAlchemyError as exc:
+    except Exception as exc:
         logger.exception("Failed to generate vulnerability summary: %s", exc)
         raise
 
@@ -318,67 +284,26 @@ def generate_vulnerability_summary(
 # SECURITY SCORE TRENDS
 # =====================================================================
 
-def _get_latest_score() -> Optional[dict[str, Any]]:
+def generate_security_score_trends(
+    window_days: Optional[int] = None,
+    limit: int = REPORT_DEFAULT_LIMIT,
+    db: Optional[Session] = None,
+) -> dict[str, Any]:
     """
-    Resolves the latest security score, preferring a PostgreSQL-backed
-    source (security_history.py, once integrated) and falling back to
-    security_score.py's in-memory buffer.
-    """
-    if security_history is not None and hasattr(security_history, "get_latest_score"):
-        with safe_execute("security_reports._get_latest_score(history)"):
-            latest = security_history.get_latest_score()
-            if latest is not None:
-                return latest
-    return security_score.get_latest_score()
-
-
-def _get_score_history(limit: int) -> list[dict[str, Any]]:
-    """
-    Resolves recent security score history, preferring a
-    PostgreSQL-backed source (security_history.py, once integrated)
-    and falling back to security_score.py's in-memory buffer.
-    """
-    if security_history is not None and hasattr(security_history, "get_score_history"):
-        with safe_execute("security_reports._get_score_history(history)"):
-            history = security_history.get_score_history(limit=limit)
-            if history:
-                return history
-    return security_score.get_score_history(limit=limit)
-
-
-def generate_security_score_trends(limit: int = REPORT_DEFAULT_LIMIT) -> dict[str, Any]:
-    """
-    Returns a time series of historical security scores, along with a
-    trend direction summary. Currently sourced from security_score.py's
-    in-memory history; transparently upgrades to PostgreSQL-backed
-    history once security_history.py is integrated (no caller changes
-    required).
+    Historical security score time series and trend direction, sourced
+    entirely from security_history.py's PostgreSQL-backed snapshots
+    (persisted once per cycle by threat_detector.run_cycle()).
     """
     try:
-        capped_limit = max(1, min(limit, REPORT_MAX_LIMIT))
-        history = _get_score_history(limit=capped_limit)
-
-        direction = "stable"
-        change = 0.0
-        if len(history) >= 2:
-            first_score = history[0].get("score", 0.0)
-            last_score = history[-1].get("score", 0.0)
-            change = round(last_score - first_score, 2)
-            if change > 1.0:
-                direction = "improving"
-            elif change < -1.0:
-                direction = "declining"
-
-        result = {
-            "generated_at": utc_now().isoformat(),
-            "sample_count": len(history),
-            "direction": direction,
-            "change": change,
-            "series": history,
-            "source": "security_history" if security_history is not None else "security_score (in-memory)",
-        }
-
-        logger.info("Security score trends generated: %d sample(s), direction=%s", len(history), direction)
+        resolved_window = _resolved_window(window_days)
+        resolved_limit = _resolved_limit(limit)
+        result = security_history.get_security_score_history(
+            window_days=resolved_window, limit=resolved_limit, db=db
+        )
+        logger.info(
+            "Security score trends generated: %d sample(s), direction=%s",
+            result.get("sample_count", 0), result.get("direction"),
+        )
         return result
 
     except Exception as exc:
@@ -391,33 +316,36 @@ def generate_security_score_trends(limit: int = REPORT_DEFAULT_LIMIT) -> dict[st
 # =====================================================================
 
 def generate_recommendation_summary(
-    db: Optional[Session] = None,
     limit: int = REPORT_DEFAULT_LIMIT,
+    db: Optional[Session] = None,
 ) -> dict[str, Any]:
     """
-    Produces a recommendation-management summary: aggregate counts by
-    priority/source plus the most recent persisted recommendations.
+    Recommendation-management summary: aggregate counts by priority/
+    source plus the most recent persisted recommendations.
     """
     try:
-        capped_limit = max(1, min(limit, REPORT_MAX_LIMIT))
-        summary_counts = get_recommendation_summary()
+        resolved_limit = _resolved_limit(limit)
+        summary_counts = security_recommendations.get_recommendation_summary()
 
-        with _resolve_session(db) as (session, _owns_session):
-            recent = get_recommendations_from_db(session, limit=capped_limit)
+        if db is not None:
+            recent = security_recommendations.get_recommendations_from_db(db, limit=resolved_limit)
+        else:
+            with session_scope() as session:
+                recent = security_recommendations.get_recommendations_from_db(session, limit=resolved_limit)
 
         result = {
-            "generated_at": utc_now().isoformat(),
+            "generated_at": _now_iso(),
             "summary": summary_counts,
             "recent_recommendations": recent,
         }
 
         logger.info(
-            "Recommendation summary generated: %d total (in-memory), %d returned from database.",
+            "Recommendation summary generated: %d total (live), %d returned from database.",
             summary_counts.get("total", 0), len(recent),
         )
         return result
 
-    except SQLAlchemyError as exc:
+    except Exception as exc:
         logger.exception("Failed to generate recommendation summary: %s", exc)
         raise
 
@@ -427,24 +355,24 @@ def generate_recommendation_summary(
 # =====================================================================
 
 def generate_full_security_report(
-    db: Optional[Session] = None,
     window_days: Optional[int] = None,
     limit: int = REPORT_DEFAULT_LIMIT,
+    db: Optional[Session] = None,
 ) -> dict[str, Any]:
-    """
-    Assembles every report section into a single combined report,
-    suitable for a "full export" request from the Reports workspace.
-    """
+    """Assembles every report section into a single combined report for full export."""
     try:
+        resolved_window = _resolved_window(window_days)
         report = {
-            "generated_at": utc_now().isoformat(),
-            "window_days": min(max(1, window_days or REPORT_DEFAULT_WINDOW_DAYS), REPORT_MAX_WINDOW_DAYS),
-            "security_summary": generate_security_summary(db=db, window_days=window_days),
-            "threat_statistics": generate_threat_statistics(db=db, window_days=window_days),
-            "incident_summary": generate_incident_summary(db=db, limit=limit),
-            "vulnerability_summary": generate_vulnerability_summary(db=db, window_days=window_days),
-            "security_score_trends": generate_security_score_trends(limit=limit),
-            "recommendation_summary": generate_recommendation_summary(db=db, limit=limit),
+            "generated_at": _now_iso(),
+            "window_days": resolved_window,
+            "security_summary": generate_security_summary(window_days=resolved_window),
+            "threat_statistics": generate_threat_statistics(window_days=resolved_window, limit=limit, db=db),
+            "incident_summary": generate_incident_summary(limit=limit),
+            "vulnerability_summary": generate_vulnerability_summary(window_days=resolved_window, db=db),
+            "security_score_trends": generate_security_score_trends(
+                window_days=resolved_window, limit=limit, db=db
+            ),
+            "recommendation_summary": generate_recommendation_summary(limit=limit, db=db),
         }
         logger.info("Full security report assembled successfully.")
         return report
@@ -454,17 +382,12 @@ def generate_full_security_report(
         raise
 
 
-def prepare_report_for_export(
-    report: dict[str, Any],
-    export_format: str = "json",
-) -> dict[str, Any]:
+def prepare_report_for_export(report: dict[str, Any], export_format: str = "json") -> dict[str, Any]:
     """
-    Wraps a generated report (any of the section reports above, or the
-    combined full report) into a standard export envelope. Performs no
-    actual file writing/serialization to disk - that responsibility
-    belongs to reports/Export.jsx's backing endpoint - this function
-    only guarantees the payload is a flat, JSON-serializable structure
-    with export metadata attached.
+    Wraps a generated report into a standard export envelope. Performs
+    no actual file writing/serialization to disk - only guarantees the
+    payload is a flat, JSON-serializable structure with export metadata
+    attached, for the frontend's Export Reports action to consume.
     """
     normalized_format = (export_format or "json").lower()
     if normalized_format not in _SUPPORTED_EXPORT_FORMATS:
@@ -475,207 +398,117 @@ def prepare_report_for_export(
 
     return {
         "export_format": normalized_format,
-        "exported_at": utc_now().isoformat(),
+        "exported_at": _now_iso(),
         "report": report,
     }
-
-
-# =====================================================================
-# SESSION RESOLUTION HELPER (mirrors crud.py / incident_logger.py conventions)
-# =====================================================================
-
-from contextlib import contextmanager
-from typing import Generator
-
-from backend.database.database import SessionLocal
-
-
-@contextmanager
-def _resolve_session(db: Optional[Session]) -> Generator[tuple[Session, bool], None, None]:
-    """
-    Yields a (session, owns_session) pair. If `db` is supplied (e.g. a
-    FastAPI Depends(get_db) session), it is used as-is. Otherwise a new
-    session is opened and closed here for standalone/report-script use.
-    """
-    if db is not None:
-        yield db, False
-        return
-
-    session = SessionLocal()
-    try:
-        yield session, True
-    except SQLAlchemyError:
-        session.rollback()
-        raise
-    finally:
-        session.close()
-
-
-# =====================================================================
-# PYDANTIC RESPONSE SCHEMAS
-# =====================================================================
-
-class SecuritySummaryResponse(BaseModel):
-    generated_at: str
-    window_days: int
-    incident_totals: dict[str, Any]
-    incidents_in_window: int
-    critical_open_incidents: int
-    latest_security_score: Optional[dict[str, Any]] = None
-    recommendation_totals: dict[str, Any]
-
-
-class ThreatStatisticsResponse(BaseModel):
-    generated_at: str
-    window_days: int
-    total_threats: int
-    by_severity: dict[str, int]
-    by_category: dict[str, int]
-    by_source_module: dict[str, int]
-    daily_counts: dict[str, int]
-
-
-class IncidentSummaryResponse(BaseModel):
-    generated_at: str
-    statistics: dict[str, Any]
-    recent_incidents: list[dict[str, Any]]
-
-
-class VulnerabilitySummaryResponse(BaseModel):
-    generated_at: str
-    window_days: int
-    total_findings: int
-    unresolved_findings: int
-    by_severity: dict[str, int]
-    by_category: dict[str, int]
-
-
-class SecurityScoreTrendsResponse(BaseModel):
-    generated_at: str
-    sample_count: int
-    direction: str
-    change: float
-    series: list[dict[str, Any]]
-    source: str
-
-
-class RecommendationSummaryResponse(BaseModel):
-    generated_at: str
-    summary: dict[str, Any]
-    recent_recommendations: list[dict[str, Any]]
-
-
-class ExportEnvelopeResponse(BaseModel):
-    export_format: str
-    exported_at: str
-    report: dict[str, Any]
 
 
 # =====================================================================
 # FASTAPI ROUTER
 # =====================================================================
 
-router = APIRouter(prefix="/api/cybersecurity/reports", tags=["Cybersecurity Reports"])
+router = APIRouter(prefix="/api/cybersecurity/reports", tags=["Security Reports"])
 
 
-@router.get("/summary", response_model=SecuritySummaryResponse)
-def api_get_security_summary(
+@router.get("/summary")
+async def api_get_security_summary(
     window_days: int = Query(REPORT_DEFAULT_WINDOW_DAYS, ge=1, le=REPORT_MAX_WINDOW_DAYS),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
+):
     try:
-        return generate_security_summary(db=db, window_days=window_days)
+        return generate_security_summary(window_days=window_days)
     except Exception as exc:
-        logger.exception("GET /reports/summary failed: %s", exc)
+        logger.exception("GET /reports/summary failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.get("/threats", response_model=ThreatStatisticsResponse)
-def api_get_threat_statistics(
+@router.get("/threats")
+async def api_get_threat_statistics(
     window_days: int = Query(REPORT_DEFAULT_WINDOW_DAYS, ge=1, le=REPORT_MAX_WINDOW_DAYS),
-    db: Session = Depends(get_db),
-) -> dict[str, Any]:
-    try:
-        return generate_threat_statistics(db=db, window_days=window_days)
-    except Exception as exc:
-        logger.exception("GET /reports/threats failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@router.get("/incidents", response_model=IncidentSummaryResponse)
-def api_get_incident_summary(
     limit: int = Query(REPORT_DEFAULT_LIMIT, ge=1, le=REPORT_MAX_LIMIT),
     db: Session = Depends(get_db),
-) -> dict[str, Any]:
+):
     try:
-        return generate_incident_summary(db=db, limit=limit)
+        return generate_threat_statistics(window_days=window_days, limit=limit, db=db)
     except Exception as exc:
-        logger.exception("GET /reports/incidents failed: %s", exc)
+        logger.exception("GET /reports/threats failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.get("/vulnerabilities", response_model=VulnerabilitySummaryResponse)
-def api_get_vulnerability_summary(
+@router.get("/incidents")
+async def api_get_incident_summary(
+    limit: int = Query(REPORT_DEFAULT_LIMIT, ge=1, le=REPORT_MAX_LIMIT),
+):
+    try:
+        return generate_incident_summary(limit=limit)
+    except Exception as exc:
+        logger.exception("GET /reports/incidents failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/vulnerabilities")
+async def api_get_vulnerability_summary(
     window_days: int = Query(REPORT_DEFAULT_WINDOW_DAYS, ge=1, le=REPORT_MAX_WINDOW_DAYS),
     db: Session = Depends(get_db),
-) -> dict[str, Any]:
+):
     try:
-        return generate_vulnerability_summary(db=db, window_days=window_days)
+        return generate_vulnerability_summary(window_days=window_days, db=db)
     except Exception as exc:
-        logger.exception("GET /reports/vulnerabilities failed: %s", exc)
+        logger.exception("GET /reports/vulnerabilities failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.get("/security-score-trends", response_model=SecurityScoreTrendsResponse)
-def api_get_security_score_trends(
-    limit: int = Query(REPORT_DEFAULT_LIMIT, ge=1, le=REPORT_MAX_LIMIT),
-) -> dict[str, Any]:
-    try:
-        return generate_security_score_trends(limit=limit)
-    except Exception as exc:
-        logger.exception("GET /reports/security-score-trends failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
-@router.get("/recommendations", response_model=RecommendationSummaryResponse)
-def api_get_recommendation_summary(
+@router.get("/security-score-trends")
+async def api_get_security_score_trends(
+    window_days: int = Query(REPORT_DEFAULT_WINDOW_DAYS, ge=1, le=REPORT_MAX_WINDOW_DAYS),
     limit: int = Query(REPORT_DEFAULT_LIMIT, ge=1, le=REPORT_MAX_LIMIT),
     db: Session = Depends(get_db),
-) -> dict[str, Any]:
+):
     try:
-        return generate_recommendation_summary(db=db, limit=limit)
+        return generate_security_score_trends(window_days=window_days, limit=limit, db=db)
     except Exception as exc:
-        logger.exception("GET /reports/recommendations failed: %s", exc)
+        logger.exception("GET /reports/security-score-trends failed")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/recommendations")
+async def api_get_recommendation_summary(
+    limit: int = Query(REPORT_DEFAULT_LIMIT, ge=1, le=REPORT_MAX_LIMIT),
+    db: Session = Depends(get_db),
+):
+    try:
+        return generate_recommendation_summary(limit=limit, db=db)
+    except Exception as exc:
+        logger.exception("GET /reports/recommendations failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/full")
-def api_get_full_report(
+async def api_get_full_report(
     window_days: int = Query(REPORT_DEFAULT_WINDOW_DAYS, ge=1, le=REPORT_MAX_WINDOW_DAYS),
     limit: int = Query(REPORT_DEFAULT_LIMIT, ge=1, le=REPORT_MAX_LIMIT),
     db: Session = Depends(get_db),
-) -> dict[str, Any]:
+):
     try:
-        return generate_full_security_report(db=db, window_days=window_days, limit=limit)
+        return generate_full_security_report(window_days=window_days, limit=limit, db=db)
     except Exception as exc:
-        logger.exception("GET /reports/full failed: %s", exc)
+        logger.exception("GET /reports/full failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.get("/export", response_model=ExportEnvelopeResponse)
-def api_prepare_report_export(
+@router.get("/export")
+async def api_prepare_report_export(
     export_format: str = Query("json", description="One of: json, csv"),
     window_days: int = Query(REPORT_DEFAULT_WINDOW_DAYS, ge=1, le=REPORT_MAX_WINDOW_DAYS),
     limit: int = Query(REPORT_DEFAULT_LIMIT, ge=1, le=REPORT_MAX_LIMIT),
     db: Session = Depends(get_db),
-) -> dict[str, Any]:
+):
     try:
-        report = generate_full_security_report(db=db, window_days=window_days, limit=limit)
+        report = generate_full_security_report(window_days=window_days, limit=limit, db=db)
         return prepare_report_for_export(report, export_format=export_format)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
-        logger.exception("GET /reports/export failed: %s", exc)
+        logger.exception("GET /reports/export failed")
         raise HTTPException(status_code=500, detail=str(exc))
 
 

@@ -46,7 +46,29 @@ try:
 except ImportError:
     security_recommendations = None
 
+# Phase 4 (incident management + historical reporting) - consumes this
+# module's cycle_result (threats, intrusions, vulnerabilities, security
+# score) purely to record confirmed incidents and durable score
+# snapshots; neither module re-detects or re-scores anything itself.
+# Imported after attack_patterns/security_recommendations above so that,
+# if security_history.py is reached via its own import of
+# attack_patterns.py, that module is already fully initialized in
+# sys.modules (avoids a partial-import failure on the circular edge).
+try:
+    from backend.cybersecurity import incident_logger
+except ImportError:
+    incident_logger = None
+
+try:
+    from backend.cybersecurity import security_history
+except ImportError:
+    security_history = None
+
 logger = get_logger("lavender_trinetra.cybersecurity.threat_detector")
+
+# Only Medium+ severity findings are confirmed as incidents, to avoid
+# flooding incident_logger.py with every transient Low-severity event.
+_INCIDENT_MIN_SEVERITY_RANK = 1  # ThreatSeverity order index: Low=0, Medium=1, High=2, Critical=3
 
 MAX_RECENT_THREATS = int(getattr(settings, "THREAT_DETECTOR_HISTORY_SIZE", 500))
 
@@ -446,6 +468,16 @@ def start() -> None:
         attack_patterns.start()
     if security_recommendations is not None and hasattr(security_recommendations, "start"):
         security_recommendations.start()
+    # incident_logger.py's security_incidents table and
+    # security_history.py's security_score_history table are both
+    # defined against the shared Base but registered only once this
+    # module (and therefore threat_detector.py, which is imported after
+    # database.init_db() already ran) is imported - so each ensures its
+    # own table exists here, mirroring attack_patterns.py's pattern.
+    if incident_logger is not None and hasattr(incident_logger, "ensure_table_exists"):
+        incident_logger.ensure_table_exists()
+    if security_history is not None and hasattr(security_history, "start"):
+        security_history.start()
     _active = True
     logger.info("Threat detection engine ready (cadence driven by main.py's monitoring loop).")
 
@@ -457,8 +489,60 @@ def stop() -> None:
         attack_patterns.stop()
     if security_recommendations is not None and hasattr(security_recommendations, "stop"):
         security_recommendations.stop()
+    if security_history is not None and hasattr(security_history, "stop"):
+        security_history.stop()
     _active = False
     logger.info("Threat detection engine stopped.")
+
+
+def _record_confirmed_incidents(cycle_result: dict[str, Any]) -> None:
+    """
+    Phase 4 integration point: turns this cycle's confirmed findings
+    (threats, intrusions, vulnerabilities) into durable incidents via
+    incident_logger.log_incident(), and persists the cycle's security
+    score via security_history.record_score_snapshot(). Performs no
+    detection, scoring, or confirmation logic of its own - it only
+    records what the modules above already confirmed this cycle.
+    """
+    if incident_logger is not None:
+        try:
+            for threat in cycle_result.get("threats", []) or []:
+                if _SEVERITY_ORDER.get(threat.get("severity", "Low"), 0) < _INCIDENT_MIN_SEVERITY_RANK:
+                    continue
+                incident_logger.log_incident(
+                    severity=threat.get("severity", "Low"),
+                    category=incident_logger.IncidentCategory.THREAT,
+                    source_module="threat_detector",
+                    description=threat.get("reason") or threat.get("title") or "Threat detected.",
+                )
+
+            for intrusion in cycle_result.get("intrusions", []) or []:
+                incident_logger.log_incident(
+                    severity=intrusion.get("severity", "Medium"),
+                    category=incident_logger.IncidentCategory.INTRUSION,
+                    source_module="intrusion_detection",
+                    description=intrusion.get("description") or intrusion.get("category") or "Intrusion event detected.",
+                )
+
+            for vulnerability in cycle_result.get("vulnerabilities", []) or []:
+                if _SEVERITY_ORDER.get(vulnerability.get("severity", "Low"), 0) < _INCIDENT_MIN_SEVERITY_RANK:
+                    continue
+                incident_logger.log_incident(
+                    severity=vulnerability.get("severity", "Low"),
+                    category=incident_logger.IncidentCategory.VULNERABILITY,
+                    source_module="vulnerability_scan",
+                    description=vulnerability.get("description") or vulnerability.get("title") or "Vulnerability finding.",
+                )
+        except Exception:
+            logger.exception("incident_logger integration failed this cycle.")
+
+    if security_history is not None:
+        try:
+            security_score_result = cycle_result.get("security_score")
+            if security_score_result:
+                security_history.record_score_snapshot(security_score_result)
+        except Exception:
+            logger.exception("security_history score snapshot failed this cycle.")
 
 
 def run_cycle(
@@ -542,6 +626,14 @@ def run_cycle(
         cycle_result["security_recommendations"] = []
         logger.debug("security_recommendations module unavailable; skipping recommendations this cycle.")
 
+    # ------------------------------------------------------------
+    # Phase 4 - incident management + historical reporting. Consumes
+    # only what has already been produced above in this same
+    # cycle_result; performs no detection, scoring, or confirmation
+    # logic of its own.
+    # ------------------------------------------------------------
+    _record_confirmed_incidents(cycle_result)
+
     return cycle_result
 
 
@@ -554,4 +646,8 @@ def get_status() -> dict[str, Any]:
         status["attack_patterns"] = attack_patterns.get_status()
     if security_recommendations is not None and hasattr(security_recommendations, "get_status"):
         status["security_recommendations"] = security_recommendations.get_status()
+    if incident_logger is not None and hasattr(incident_logger, "get_incident_summary"):
+        status["incident_summary"] = incident_logger.get_incident_summary()
+    if security_history is not None and hasattr(security_history, "get_status"):
+        status["security_history"] = security_history.get_status()
     return status

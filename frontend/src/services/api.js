@@ -427,28 +427,16 @@ export async function exportSecurityReport({ exportFormat = "json", windowDays, 
 // =====================================================================
 
 /** getIncidents — confirmed security incidents, newest first, with optional filters. */
-export async function getIncidents({
-  status,
-  severity,
-  category,
-  sourceModule,
-  limit = 100,
-} = {}) {
+export async function getIncidents({ status, severity, category, limit = 100 } = {}) {
   const { data } = await apiClient.get("/cybersecurity/incidents", {
-    params: buildParams({
-      status,
-      severity,
-      category,
-      source_module: sourceModule,
-      limit,
-    }),
+    params: buildParams({ status, severity, category, limit }),
   });
   return data;
 }
 
 /** getIncidentStatistics — aggregate incident counts by status/severity. */
 export async function getIncidentStatistics() {
-  const { data } = await apiClient.get("/cybersecurity/incidents/statistics");
+  const { data } = await apiClient.get("/cybersecurity/incidents/summary");
   return data;
 }
 

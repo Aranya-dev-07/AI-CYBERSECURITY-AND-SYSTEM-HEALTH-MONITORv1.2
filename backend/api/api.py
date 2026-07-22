@@ -22,6 +22,23 @@ try:
 except ImportError:
     security_recommendations_router = None
 
+# Phase 4 (incident management + historical reporting) routers - same
+# self-contained-router mounting pattern as the Phase 3 routers above.
+try:
+    from backend.cybersecurity.incident_logger import router as incident_logger_router
+except ImportError:
+    incident_logger_router = None
+
+try:
+    from backend.cybersecurity.security_history import router as security_history_router
+except ImportError:
+    security_history_router = None
+
+try:
+    from backend.cybersecurity.security_reports import router as security_reports_router
+except ImportError:
+    security_reports_router = None
+
 logging.basicConfig(
     level=getattr(logging, getattr(settings, "LOG_LEVEL", "INFO"), logging.INFO),
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -116,6 +133,30 @@ def create_app() -> FastAPI:
         logger.warning(
             "backend.cybersecurity.security_recommendations not available - "
             "/api/cybersecurity/recommendations/* endpoints will not be mounted."
+        )
+
+    if incident_logger_router is not None:
+        application.include_router(incident_logger_router)
+    else:
+        logger.warning(
+            "backend.cybersecurity.incident_logger not available - "
+            "/api/cybersecurity/incidents/* endpoints will not be mounted."
+        )
+
+    if security_history_router is not None:
+        application.include_router(security_history_router)
+    else:
+        logger.warning(
+            "backend.cybersecurity.security_history not available - "
+            "/api/cybersecurity/history/* endpoints will not be mounted."
+        )
+
+    if security_reports_router is not None:
+        application.include_router(security_reports_router)
+    else:
+        logger.warning(
+            "backend.cybersecurity.security_reports not available - "
+            "/api/cybersecurity/reports/* endpoints will not be mounted."
         )
 
     @application.get("/", tags=["Root"])

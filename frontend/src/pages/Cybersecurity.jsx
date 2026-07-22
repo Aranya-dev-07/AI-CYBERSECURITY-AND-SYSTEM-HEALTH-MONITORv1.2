@@ -6,15 +6,21 @@ import Firewall from "../cybersecurity/Firewall.jsx";
 import Ports from "../cybersecurity/Ports.jsx";
 import Intrusion from "../cybersecurity/Intrusion.jsx";
 import Vulnerabilities from "../cybersecurity/Vulnerabilities.jsx";
+import SecurityScore from "../cybersecurity/Securityscores.jsx";
+import SecurityReports from "../cybersecurity/SecurityReports.jsx";
+import IncidentHistory from "../cybersecurity/IncidentHistory.jsx";
 
 /**
  * Cybersecurity — the cybersecurity workspace. Pure layout shell: each
  * widget below (SecurityOverview, ThreatOverview, Firewall, Ports,
- * Intrusion, Vulnerabilities) fetches its own data directly from
- * services/api.js and manages its own loading/refresh state - this
- * component does not fetch, hold, or pass down any security data
- * itself. No detection, scanning, or scoring logic lives here; that
- * is owned entirely by the backend (cybersecurity/*.py).
+ * Intrusion, Vulnerabilities, SecurityScore, SecurityReports,
+ * IncidentHistory) fetches its own data directly from services/api.js
+ * and manages its own loading/refresh state - this component does not
+ * fetch, hold, or pass down any security data itself. No detection,
+ * scanning, scoring, reporting, or incident-management logic lives
+ * here; that is owned entirely by the backend (cybersecurity/*.py) -
+ * Phases 1-2 (monitoring/detection), Phase 3 (explainable AI security
+ * score), and Phase 4 (incident management + historical reporting).
  */
 function Cybersecurity() {
   return (
@@ -46,6 +52,15 @@ function Cybersecurity() {
         <Intrusion />
         <Vulnerabilities />
       </section>
+
+      {/* Explainable AI Security Score (Phase 3) */}
+      <SecurityScore />
+
+      {/* Security Reports (Phase 4) */}
+      <SecurityReports />
+
+      {/* Incident History (Phase 4) */}
+      <IncidentHistory />
     </div>
   );
 }
