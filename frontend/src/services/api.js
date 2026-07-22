@@ -352,6 +352,135 @@ export async function getReports({ limit = 50 } = {}) {
 }
 
 // =====================================================================
+// CYBERSECURITY - SECURITY REPORTS (security_reports.py)
+// Sole data source for cybersecurity/SecurityReports.jsx.
+// =====================================================================
+
+/** getSecurityReportSummary — top-level security summary (incidents, latest score, recommendations). */
+export async function getSecurityReportSummary({ windowDays } = {}) {
+  const { data } = await apiClient.get("/cybersecurity/reports/summary", {
+    params: buildParams({ window_days: windowDays }),
+  });
+  return data;
+}
+
+/** getSecurityReportThreatStatistics — historical threat statistics by severity/category/source. */
+export async function getSecurityReportThreatStatistics({ windowDays } = {}) {
+  const { data } = await apiClient.get("/cybersecurity/reports/threats", {
+    params: buildParams({ window_days: windowDays }),
+  });
+  return data;
+}
+
+/** getSecurityReportIncidentSummary — incident statistics plus the most recent incidents. */
+export async function getSecurityReportIncidentSummary({ limit = 50 } = {}) {
+  const { data } = await apiClient.get("/cybersecurity/reports/incidents", {
+    params: buildParams({ limit }),
+  });
+  return data;
+}
+
+/** getSecurityReportVulnerabilitySummary — historical vulnerability findings by severity/category. */
+export async function getSecurityReportVulnerabilitySummary({ windowDays } = {}) {
+  const { data } = await apiClient.get("/cybersecurity/reports/vulnerabilities", {
+    params: buildParams({ window_days: windowDays }),
+  });
+  return data;
+}
+
+/** getSecurityReportScoreTrends — historical security score time series and trend direction. */
+export async function getSecurityReportScoreTrends({ limit = 100 } = {}) {
+  const { data } = await apiClient.get("/cybersecurity/reports/security-score-trends", {
+    params: buildParams({ limit }),
+  });
+  return data;
+}
+
+/** getSecurityReportRecommendationSummary — recommendation counts plus the most recent recommendations. */
+export async function getSecurityReportRecommendationSummary({ limit = 50 } = {}) {
+  const { data } = await apiClient.get("/cybersecurity/reports/recommendations", {
+    params: buildParams({ limit }),
+  });
+  return data;
+}
+
+/** getFullSecurityReport — every report section combined into one payload. */
+export async function getFullSecurityReport({ windowDays, limit = 50 } = {}) {
+  const { data } = await apiClient.get("/cybersecurity/reports/full", {
+    params: buildParams({ window_days: windowDays, limit }),
+  });
+  return data;
+}
+
+/** exportSecurityReport — a full security report wrapped in an export envelope ("json"|"csv"). */
+export async function exportSecurityReport({ exportFormat = "json", windowDays, limit = 50 } = {}) {
+  const { data } = await apiClient.get("/cybersecurity/reports/export", {
+    params: buildParams({ export_format: exportFormat, window_days: windowDays, limit }),
+  });
+  return data;
+}
+
+// =====================================================================
+// CYBERSECURITY - INCIDENT MANAGEMENT (incident_logger.py)
+// Sole data source for cybersecurity/IncidentHistory.jsx (incident list
+// / details / status), combined with the history endpoints below.
+// =====================================================================
+
+/** getIncidents — confirmed security incidents, newest first, with optional filters. */
+export async function getIncidents({
+  status,
+  severity,
+  category,
+  sourceModule,
+  limit = 100,
+} = {}) {
+  const { data } = await apiClient.get("/cybersecurity/incidents", {
+    params: buildParams({
+      status,
+      severity,
+      category,
+      source_module: sourceModule,
+      limit,
+    }),
+  });
+  return data;
+}
+
+/** getIncidentStatistics — aggregate incident counts by status/severity. */
+export async function getIncidentStatistics() {
+  const { data } = await apiClient.get("/cybersecurity/incidents/statistics");
+  return data;
+}
+
+/** getIncidentById — a single incident's full detail record. */
+export async function getIncidentById(incidentId) {
+  const { data } = await apiClient.get(`/cybersecurity/incidents/${incidentId}`);
+  return data;
+}
+
+// =====================================================================
+// CYBERSECURITY - SECURITY HISTORY (security_history.py)
+// Sole data source for cybersecurity/IncidentHistory.jsx's timeline
+// and historical-trend views.
+// =====================================================================
+
+/** getIncidentTimeline — chronological incident timeline (oldest first), optionally filtered by status. */
+export async function getIncidentTimeline({ windowDays, limit = 200, status } = {}) {
+  const { data } = await apiClient.get("/cybersecurity/history/incidents", {
+    params: buildParams({ window_days: windowDays, limit, status }),
+  });
+  return data;
+}
+
+/** getThreatTimeline — chronological timeline of confirmed threat-related incidents. */
+export async function getThreatTimeline({ windowDays, limit = 200 } = {}) {
+  const { data } = await apiClient.get("/cybersecurity/history/threats", {
+    params: buildParams({ window_days: windowDays, limit }),
+  });
+  return data;
+}
+
+// =====================================================================
 // EXPORT
 // =====================================================================
 
@@ -390,4 +519,17 @@ export default {
   getRecentAttackPatterns,
   getSecurityRecommendations,
   getReports,
+  getSecurityReportSummary,
+  getSecurityReportThreatStatistics,
+  getSecurityReportIncidentSummary,
+  getSecurityReportVulnerabilitySummary,
+  getSecurityReportScoreTrends,
+  getSecurityReportRecommendationSummary,
+  getFullSecurityReport,
+  exportSecurityReport,
+  getIncidents,
+  getIncidentStatistics,
+  getIncidentById,
+  getIncidentTimeline,
+  getThreatTimeline,
 };
