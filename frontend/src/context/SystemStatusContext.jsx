@@ -34,19 +34,43 @@ const INITIAL_STATUS = {
 const SystemStatusContext = createContext(undefined);
 
 /**
+ * BACKEND_STATUS_MAP — translates backend/core.py's StatusValue
+ * vocabulary (operational / degraded / unavailable / stopped /
+ * unknown, as returned by GET /status via services/api.js's
+ * getSystemStatus()) into the online / starting / offline vocabulary
+ * every consumer (Sidebar.jsx, Topbar.jsx) already renders. Centralized
+ * here so those components never need to know about the backend's raw
+ * status strings — this is the single translation point for the whole
+ * application.
+ */
+const BACKEND_STATUS_MAP = {
+  operational: "online",
+  degraded: "starting",
+  unavailable: "offline",
+  stopped: "offline",
+  unknown: "starting",
+};
+
+function toUiStatus(rawStatus) {
+  return BACKEND_STATUS_MAP[rawStatus] ?? "starting";
+}
+
+/**
  * normalizeStatusPayload — maps the backend's SystemStatusResponse
  * (backend/api/schemas.py: { api, ai, monitoring, database }) plus the
  * optional dashboard statistics aggregate (database/crud.py::
- * get_dashboard_statistics) onto this context's stable field names.
- * Pure data reshaping only — no status evaluation or business logic.
+ * get_dashboard_statistics) onto this context's stable field names,
+ * translating raw backend status strings to the UI vocabulary via
+ * toUiStatus(). Pure data reshaping only — no business logic beyond
+ * that vocabulary translation.
  */
 function normalizeStatusPayload(statusResponse, statsResponse, previousWorkspace) {
   return {
-    aiEngine: statusResponse?.ai ?? "unknown",
-    database: statusResponse?.database ?? "unknown",
-    api: statusResponse?.api ?? "unknown",
-    monitoring: statusResponse?.monitoring ?? "unknown",
-    security: statusResponse?.security ?? statusResponse?.cybersecurity ?? "unknown",
+    aiEngine: toUiStatus(statusResponse?.ai),
+    database: toUiStatus(statusResponse?.database),
+    api: toUiStatus(statusResponse?.api),
+    monitoring: toUiStatus(statusResponse?.monitoring),
+    security: toUiStatus(statusResponse?.security ?? statusResponse?.cybersecurity),
     currentTestRun: statsResponse?.latest_run ?? null,
     activeAlertsCount: statsResponse?.total_alerts ?? 0,
     aiHealthScore: statsResponse?.latest_health_score ?? null,

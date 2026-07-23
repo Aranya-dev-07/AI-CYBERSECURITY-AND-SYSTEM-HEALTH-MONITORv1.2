@@ -14,12 +14,20 @@ from sqlalchemy.orm import Session
 from backend.config import settings
 from backend.core import get_logger, safe_execute
 
-from backend.cybersecurity import threat_detector
-
 try:
     from backend.cybersecurity import intrusion_detection
 except ImportError:  # pragma: no cover - guarded per existing module convention
     intrusion_detection = None
+
+# NOTE: threat_detector.py imports this module (guarded) to drive its
+# Phase 3/4 cycle, so importing it back here at module level would
+# create a circular import whose success depends on which module
+# happens to be imported first across the app - fragile whenever a
+# third module (e.g. security_history.py) imports this module before
+# threat_detector.py has finished loading. get_recent_threats() is
+# only ever needed inside analyze_patterns() below, so it is imported
+# there, lazily, at call time instead - by then both modules are
+# always fully initialized regardless of import order.
 
 from backend.database.database import Base, engine, session_scope
 from backend.api.dependencies import get_db
@@ -433,6 +441,8 @@ def analyze_patterns(
 ) -> list[dict[str, Any]]:
     try:
         if threats is None:
+            from backend.cybersecurity import threat_detector  # lazy: see import note above
+
             threats = threat_detector.get_recent_threats(limit=200)
         if intrusions is None:
             intrusions = (

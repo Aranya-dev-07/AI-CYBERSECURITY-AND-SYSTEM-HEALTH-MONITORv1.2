@@ -8,7 +8,7 @@ import Intrusion from "../cybersecurity/Intrusion.jsx";
 import Vulnerabilities from "../cybersecurity/Vulnerabilities.jsx";
 import SecurityScore from "../cybersecurity/Securityscores.jsx";
 import SecurityReports from "../cybersecurity/SecurityReports.jsx";
-import IncidentHistory from "../cybersecurity/IncidentHistory.jsx";
+import IncidentHistory from "../cybersecurity/IncidentReports.jsx";
 
 /**
  * Cybersecurity — the cybersecurity workspace. Pure layout shell: each
